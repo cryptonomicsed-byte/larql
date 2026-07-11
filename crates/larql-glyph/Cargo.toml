@@ -1,0 +1,13 @@
+[package]
+name = "larql-glyph"
+version = "0.1.0"
+edition = "2021"
+description = "GlyphIndex adapter — LQL-style DESCRIBE/SELECT/WALK/INFER over sovereign glyph memory graphs"
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = "0.10"
+hex = "0.4"
