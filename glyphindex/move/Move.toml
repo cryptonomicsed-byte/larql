@@ -1,0 +1,14 @@
+[package]
+name = "glyphindex"
+edition = "2024.beta"
+
+# Pure-logic package: only the Move stdlib (std::hash, std::vector) is used,
+# which the Sui toolchain provides implicitly. Run the unit tests with:
+#   sui move test
+# (or `aptos move test` after pointing [dependencies] at MoveStdlib).
+
+[dependencies]
+Sui = { git = "https://github.com/MystenLabs/sui.git", subdir = "crates/sui-framework/packages/sui-framework", rev = "framework/mainnet" }
+
+[addresses]
+glyphindex = "0x0"

@@ -1,0 +1,83 @@
+{
+	"nodes": {
+		"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824": {
+			"canonical_id": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			"glyph": "屔",
+			"odu_base": 44,
+			"odu_composed": 11506,
+			"ts": 1.5,
+			"tags": [
+				"source:notes",
+				"topic:greeting"
+			],
+			"walrus_blob_id": "walrus://vault/hello-chunk"
+		},
+		"44bb6336e45b2f5daf764930ac1d1f2798ad92c34048f0395686ac4509a0a7ec": {
+			"canonical_id": "44bb6336e45b2f5daf764930ac1d1f2798ad92c34048f0395686ac4509a0a7ec",
+			"glyph": "㖞",
+			"odu_base": 68,
+			"odu_composed": 17595,
+			"ts": 2.5,
+			"tags": [
+				"topic:spec"
+			],
+			"walrus_blob_id": null
+		},
+		"bdf299182a61f04e31c6445f96a6a68d927d7e6cd9c56f883c8f1cc7cfac8683": {
+			"canonical_id": "bdf299182a61f04e31c6445f96a6a68d927d7e6cd9c56f883c8f1cc7cfac8683",
+			"glyph": "ﱏ",
+			"odu_base": 189,
+			"odu_composed": 48626,
+			"ts": 3.5,
+			"tags": [],
+			"walrus_blob_id": null
+		},
+		"cca6a38cbd2874b7f2b4809ba11ee5177660c4ad5fb4851991414722729fd523": {
+			"canonical_id": "cca6a38cbd2874b7f2b4809ba11ee5177660c4ad5fb4851991414722729fd523",
+			"glyph": "䘫",
+			"odu_base": 204,
+			"odu_composed": 52390,
+			"ts": 4.5,
+			"tags": [],
+			"walrus_blob_id": null
+		},
+		"e32866670f27c0ccaeda5facc74fcfc3f8c17b18bcae2fb9dc150d91c601db1b": {
+			"canonical_id": "e32866670f27c0ccaeda5facc74fcfc3f8c17b18bcae2fb9dc150d91c601db1b",
+			"glyph": "啑",
+			"odu_base": 227,
+			"odu_composed": 58152,
+			"ts": 0.5,
+			"tags": [
+				"vessel:calabash"
+			],
+			"walrus_blob_id": null
+		}
+	},
+	"edges": [
+		{
+			"from": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			"to": "44bb6336e45b2f5daf764930ac1d1f2798ad92c34048f0395686ac4509a0a7ec",
+			"relation": "follows"
+		},
+		{
+			"from": "44bb6336e45b2f5daf764930ac1d1f2798ad92c34048f0395686ac4509a0a7ec",
+			"to": "bdf299182a61f04e31c6445f96a6a68d927d7e6cd9c56f883c8f1cc7cfac8683",
+			"relation": "follows"
+		},
+		{
+			"from": "bdf299182a61f04e31c6445f96a6a68d927d7e6cd9c56f883c8f1cc7cfac8683",
+			"to": "cca6a38cbd2874b7f2b4809ba11ee5177660c4ad5fb4851991414722729fd523",
+			"relation": "follows"
+		},
+		{
+			"from": "e32866670f27c0ccaeda5facc74fcfc3f8c17b18bcae2fb9dc150d91c601db1b",
+			"to": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			"relation": "follows"
+		},
+		{
+			"from": "e32866670f27c0ccaeda5facc74fcfc3f8c17b18bcae2fb9dc150d91c601db1b",
+			"to": "cca6a38cbd2874b7f2b4809ba11ee5177660c4ad5fb4851991414722729fd523",
+			"relation": "rem-cluster"
+		}
+	]
+}

@@ -1,0 +1,57 @@
+{
+ "fold": [
+  {
+   "text": "Àṣẹ",
+   "canonical_id": "e32866670f27c0ccaeda5facc74fcfc3f8c17b18bcae2fb9dc150d91c601db1b",
+   "codepoint": 21841,
+   "odu_base": 227,
+   "odu_composed": 58152
+  },
+  {
+   "text": "hello",
+   "canonical_id": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+   "codepoint": 23636,
+   "odu_base": 44,
+   "odu_composed": 11506
+  },
+  {
+   "text": "GlyphIndex",
+   "canonical_id": "44bb6336e45b2f5daf764930ac1d1f2798ad92c34048f0395686ac4509a0a7ec",
+   "codepoint": 13726,
+   "odu_base": 68,
+   "odu_composed": 17595
+  },
+  {
+   "text": "😊🚀 Unicode test",
+   "canonical_id": "bdf299182a61f04e31c6445f96a6a68d927d7e6cd9c56f883c8f1cc7cfac8683",
+   "codepoint": 64591,
+   "odu_base": 189,
+   "odu_composed": 48626
+  },
+  {
+   "text": "Ọ̀rúnmìlà",
+   "canonical_id": "cca6a38cbd2874b7f2b4809ba11ee5177660c4ad5fb4851991414722729fd523",
+   "codepoint": 17963,
+   "odu_base": 204,
+   "odu_composed": 52390
+  }
+ ],
+ "kdf": {
+  "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "owner": "0xabc123",
+  "purpose": "glyph-memory",
+  "enc_key": "39a5e39cb799872fa548f02b6b60a3876dd085016f389ebee2c3ad03b80512ed",
+  "mac_key": "8004b049f4e1f8df5f8afa7b1005c471c2dace0640b2103bc6b78fd5d9808d24",
+  "duress_enc_key": "ad80c87d330d59d6efb8d9283c839e0db8b74f5693ff2ed85bfac8a9401caf3e"
+ },
+ "merkle": {
+  "empty_root": "58cc47f0d238cea8bb764f7a927a54b398c8baf5de0a2332c03008038c3fd9a8",
+  "vector_root": "b6c97879f0b04824c626cef414c8be9f459abd853743e013b25ccb34256015ed",
+  "vector_rule": "over golden-fixture node ids with blob_sha256 = SHA-256(ascii canonical_id)"
+ },
+ "walk": {
+  "start_text": "Àṣẹ",
+  "depth_1_count": 2,
+  "depth_2_count": 4
+ }
+}
