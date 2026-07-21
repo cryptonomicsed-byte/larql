@@ -273,6 +273,61 @@ impl GlyphGraph {
     }
 }
 
+// ---- GIX1 anchoring (keyless) ----------------------------------------------
+//
+// The metadata layer can audit envelopes and recompute the Sui-anchorable
+// Merkle root without ever holding keys or ciphertext plaintext — receipts
+// carry (canonical_id, blob_sha256) and that is all the root needs.
+
+/// Frozen empty-vault Merkle root: SHA-256("GIX1:empty").
+pub const GIX1_EMPTY_ROOT: &str =
+    "58cc47f0d238cea8bb764f7a927a54b398c8baf5de0a2332c03008038c3fd9a8";
+
+/// Keyless structural audit of a sealed GIX1 blob — same checks as the Zero
+/// example and Zangbeto's crypto-kernel auditor:
+/// `"GIX1" | version(0x01) | flags(bit0=zlib only) | nonce(12) | ct||tag(16)`.
+pub fn gix1_audit(blob: &[u8]) -> bool {
+    blob.len() >= 34 && blob.starts_with(b"GIX1") && blob[4] == 1 && blob[5] <= 1
+}
+
+/// Merkle root over sealed blobs, the value anchored on Sui:
+/// leaf = SHA-256(canonical_id bytes || blob_sha256), leaves sorted by
+/// canonical id, odd leaf promoted unchanged. Entries are
+/// `(canonical_id hex, blob_sha256)` pairs as carried by receipts.
+pub fn merkle_root(entries: &[(String, [u8; 32])]) -> Result<String, GlyphGraphError> {
+    if entries.is_empty() {
+        return Ok(GIX1_EMPTY_ROOT.to_string());
+    }
+    let mut sorted: Vec<&(String, [u8; 32])> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut level: Vec<[u8; 32]> = Vec::with_capacity(sorted.len());
+    for (canonical_id, blob_hash) in sorted {
+        let id_bytes = hex::decode(canonical_id).map_err(|_| GlyphGraphError::BadCanonicalId)?;
+        if id_bytes.len() != 32 {
+            return Err(GlyphGraphError::BadCanonicalId);
+        }
+        let mut h = Sha256::new();
+        h.update(&id_bytes);
+        h.update(blob_hash);
+        level.push(h.finalize().into());
+    }
+    while level.len() > 1 {
+        let mut next: Vec<[u8; 32]> = Vec::with_capacity(level.len().div_ceil(2));
+        for pair in level.chunks(2) {
+            if let [a, b] = pair {
+                let mut h = Sha256::new();
+                h.update(a);
+                h.update(b);
+                next.push(h.finalize().into());
+            } else {
+                next.push(pair[0]);
+            }
+        }
+        level = next;
+    }
+    Ok(hex::encode(level[0]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +471,56 @@ mod tests {
             Some("walrus://vault/hello-chunk")
         );
         assert!(described.node.tags.contains("topic:greeting"));
+    }
+
+    #[test]
+    fn gix1_audit_checks_envelope_structure() {
+        let mut blob = vec![0u8; 34];
+        blob[..4].copy_from_slice(b"GIX1");
+        blob[4] = 1;
+        assert!(gix1_audit(&blob));
+        blob[5] = 1;
+        assert!(gix1_audit(&blob), "zlib flag is valid");
+        blob[5] = 2;
+        assert!(!gix1_audit(&blob), "unknown flags rejected");
+        blob[5] = 0;
+        blob[4] = 9;
+        assert!(!gix1_audit(&blob), "unknown version rejected");
+        assert!(!gix1_audit(&blob[..20]), "short blob rejected");
+        assert!(!gix1_audit(b"NOPE"), "bad magic rejected");
+    }
+
+    // Deterministic cross-language Merkle vector: the five golden-fixture
+    // node ids with blob_sha256 = SHA-256(ascii canonical_id). Computed by
+    // the canonical Python reference; asserted identically by mnemopi (TS).
+    const MERKLE_VECTOR_ROOT: &str =
+        "b6c97879f0b04824c626cef414c8be9f459abd853743e013b25ccb34256015ed";
+
+    #[test]
+    fn merkle_root_matches_frozen_and_cross_language_vectors() {
+        assert_eq!(merkle_root(&[]).unwrap(), GIX1_EMPTY_ROOT);
+
+        let graph: GlyphGraph = serde_json::from_str(GOLDEN_SNAPSHOT).unwrap();
+        let mut entries: Vec<(String, [u8; 32])> = graph
+            .nodes
+            .keys()
+            .map(|id| {
+                let mut h = Sha256::new();
+                h.update(id.as_bytes());
+                (id.clone(), h.finalize().into())
+            })
+            .collect();
+        assert_eq!(merkle_root(&entries).unwrap(), MERKLE_VECTOR_ROOT);
+
+        // Order-insensitive: leaves sort by canonical id.
+        entries.reverse();
+        assert_eq!(merkle_root(&entries).unwrap(), MERKLE_VECTOR_ROOT);
+
+        let bad = vec![("nothex".to_string(), [0u8; 32])];
+        assert!(matches!(
+            merkle_root(&bad),
+            Err(GlyphGraphError::BadCanonicalId)
+        ));
     }
 
     #[test]
