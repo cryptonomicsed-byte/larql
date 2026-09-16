@@ -8,12 +8,16 @@ members = [
     "crates/larql-core",
     "crates/larql-vindex",
     "crates/larql-vindex-spec",
+    "crates/larql-execution",
+    "crates/larql-factory",
     "crates/larql-inference",
     "crates/larql-kv",
     "crates/larql-lql",
     "crates/larql-glyph",
     "crates/larql-cli",
+    "crates/larql-demos",
     "crates/larql-server",
+    "crates/vindex-cli",
     "crates/larql-router",
     "crates/larql-router-protocol",
     "crates/larql-python",
@@ -29,25 +33,45 @@ default-members = [
     "crates/larql-core",
     "crates/larql-vindex",
     "crates/larql-vindex-spec",
+    "crates/larql-factory",
     "crates/larql-inference",
     "crates/larql-kv",
     "crates/larql-lql",
     "crates/larql-glyph",
     "crates/larql-cli",
+    "crates/larql-demos",
     "crates/larql-server",
+    "crates/vindex-cli",
     "crates/larql-router",
     "crates/larql-router-protocol",
     "crates/larql-boundary",
     "crates/model-compute",
 ]
 
+# Workspace-wide lint policy, inherited by every member via
+# `[lints] workspace = true`. New toolchains ship new clippy lints that
+# would otherwise turn CI red overnight (every workflow runs
+# `clippy -D warnings` on latest stable); allows recorded here are
+# deliberate deferrals with a cleanup owner, not permanent exemptions.
+[workspace.lints.clippy]
+# rust 1.98: prefers `as_chunks::<N>()` over `chunks_exact(N)`. Dozens
+# of pre-existing sites across the workspace (models, cli, compute…);
+# the touched crates were converted in-place, the long tail is a
+# dedicated mechanical cleanup.
+chunks_exact_to_as_chunks = "allow"
+
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.80"
+# MSRV. The NEON dot-product intrinsics (`vdotq_s32` and friends,
+# `stdarch_neon_dotprod`) that the VINDEX3 CPU integer path and the
+# cpu7_probe example use stabilised in 1.98; every toolchain from 1.88 to
+# 1.97 refuses them (bisected 2026-09-01). The quality workflow checks
+# this claim under `RUSTUP_TOOLCHAIN`, so it cannot drift silently again.
+rust-version = "1.98"
 authors = []
 license = "Apache-2.0"
-repository = "https://github.com/chrishayuk/chuk-larql-rs"
+repository = "https://github.com/chrishayuk/larql"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -73,3 +97,11 @@ debug = false
 [profile.release]
 debug = "line-tables-only"
 split-debuginfo = "packed"
+
+# Distribution builds only (ADR-0026 release binaries) — full strip, no
+# line tables. Kept separate from [profile.release] so local profiling
+# builds are unaffected; CI's release.yml is the only user.
+[profile.release-dist]
+inherits = "release"
+debug = false
+strip = true

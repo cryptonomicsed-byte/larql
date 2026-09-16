@@ -4,10 +4,30 @@
 //!
 //! Carved out of the monolithic `config/types.rs` in the 2026-04-25
 //! round-2 cleanup.
+//!
+//! ## This struct is a lossy projection, and the loss is load-bearing
+//!
+//! Every field a checkpoint declares that reaches the forward pass has
+//! to appear here or the served model silently differs from the
+//! checkpoint. That is not hypothetical: `rope_scaling` was absent
+//! until 2026-08-06, so `gemma-3-4b-it` — whose `config.json` says
+//! `{"factor": 8.0, "rope_type": "linear"}` — was served with a
+//! position divisor of 1.0 on its five global layers instead of 8.0.
+//! CPU and Metal read the same `index.json`, so both were wrong in the
+//! same way and the CPU-vs-Metal parity suite stayed green. A parity
+//! gate cannot see a defect in the config both of its arms share.
+//!
+//! `model_config_persists_every_forward_affecting_field` pins the
+//! inventory. When you add a field to `larql_models::ModelConfig`, that
+//! test tells you to either persist it here or record why it does not
+//! need persisting. `embedding_multiplier` is the standing example of
+//! the second case: it round-trips through the top-level
+//! `VindexConfig.embed_scale` instead, and duplicating it here would
+//! create a second source of truth for one number.
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 pub struct VindexModelConfig {
     pub model_type: String,
     pub head_dim: usize,
@@ -16,6 +36,50 @@ pub struct VindexModelConfig {
     pub rope_base: f64,
     #[serde(default)]
     pub sliding_window: Option<usize>,
+    /// The window's explicit enable flag, persisted separately from the
+    /// window itself because they are separate declarations: Qwen2.5
+    /// ships a 32768 window beside `use_sliding_window: false`. Dropping
+    /// the flag on the way into a vindex would serve the window against
+    /// the checkpoint's instruction.
+    #[serde(default)]
+    pub use_sliding_window: Option<bool>,
+    /// How far up the stack an enabled window applies.
+    #[serde(default)]
+    pub max_window_layers: Option<usize>,
+    /// The declared positional scheme, verbatim.
+    ///
+    /// Persisted because on `granitemoehybrid` it is what turns rotation
+    /// on at all — a container that dropped it would rebuild the model as
+    /// a NoPE model, or as a rotating one, depending only on which side of
+    /// the boundary the question was asked.
+    #[serde(default)]
+    pub position_embedding_type: Option<String>,
+    /// The per-layer rotary schedule, in the checkpoint's own polarity:
+    /// `1` rotates, `0` is NoPE.
+    ///
+    /// Persisted because it decides which layers encode position at all.
+    /// Dropping it would rebuild SmolLM3 as a model that rotates
+    /// everywhere — fluent, and wrong on 9 of 36 layers.
+    #[serde(default)]
+    pub no_rope_layers: Option<Vec<i64>>,
+    /// The interval fallback, persisted so a container that carried no
+    /// explicit mask still knows the schedule it was compiled under.
+    #[serde(default)]
+    pub no_rope_layer_interval: Option<usize>,
+    /// The declared rotary pairing, persisted so the container records
+    /// what the checkpoint claimed rather than what this build does.
+    #[serde(default)]
+    pub rope_interleaved: Option<bool>,
+    /// The declared multi-axis flag, persisted for the same reason.
+    #[serde(default)]
+    pub use_mrope: Option<bool>,
+    /// Falcon's one-word FFN shape (`activation`), persisted so the
+    /// container records the claim the boundary checked.
+    #[serde(default)]
+    pub ffn_shape_name: Option<String>,
+    /// The declared `is_llama_config` flag, persisted for the same reason.
+    #[serde(default)]
+    pub is_llama_config: Option<bool>,
     /// MoE configuration (None for dense models).
     #[serde(default)]
     pub moe: Option<MoeConfig>,
@@ -49,12 +113,62 @@ pub struct VindexModelConfig {
     /// Per-layer embedding dimension (PLE). 0 or None = no PLE.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_layer_embed_dim: Option<usize>,
+    /// Gemma 3n/4-E: double-wide MLP on the KV-shared layers, verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_double_wide_mlp: Option<bool>,
+    /// Gemma 3n/4-E: the per-layer-input embedding vocabulary, verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocab_size_per_layer_input: Option<u64>,
     /// RoPE base for local/sliding window layers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rope_local_base: Option<f64>,
+    /// Per-layer declared rope theta, verbatim from `layer_rope_theta` —
+    /// `0.0` entries are the upstream NoPE sentinel, interpreted only by
+    /// `ModelArchitecture::position_policy_for_layer` after the round-trip.
+    /// Dropping this served every NoPE layer with full-strength rotation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer_rope_theta: Option<Vec<f64>>,
     /// Query pre-attention scalar (overrides 1/sqrt(head_dim)).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_pre_attn_scalar: Option<f64>,
+    /// Extra attention-score multiplier on top of 1/sqrt(head_dim)
+    /// (`qk_scale_factor`). Distinct from `query_pre_attn_scalar`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qk_scale_factor: Option<f64>,
+    /// Multiplier on the final hidden state before the vocab projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_multiplier: Option<f64>,
+    /// Post-norm epsilon when it differs from `norm_eps` (1e-8 vs 1e-5 on
+    /// the same checkpoint is a real shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_norm_eps: Option<f64>,
+    /// Whether attention projections carry biases, when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_bias: Option<bool>,
+    /// FFN activation name, verbatim (`hidden_act`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_act: Option<String>,
+    /// SiTU-GLU's two softcaps (`activation_situ_beta`,
+    /// `activation_situ_linear_beta`), verbatim.
+    ///
+    /// They are parameters of the combine `hidden_act: "situ"` names, and
+    /// a container that carried the name without them would rebuild the
+    /// FFN at the reference's `beta or 1.0` fallback — a different
+    /// function, with every shape still closing and no parity arm able to
+    /// see it, since both arms would read the same index.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_situ_beta: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_situ_linear_beta: Option<f64>,
+    /// One FFN intermediate width per layer (`larql_ffn_intermediate_size_by_layer`),
+    /// verbatim, for checkpoints whose gate/up/down projections were sliced
+    /// to different widths in different layers. A vindex that dropped it
+    /// would rebuild every layer at the dense width and refuse its own tensors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ffn_intermediate_size_by_layer: Option<Vec<usize>>,
+    /// Declared context bound (`max_position_embeddings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_position_embeddings: Option<usize>,
     /// Final-logit tanh softcap (Gemma 2/3/4: 30.0). Applied to logits
     /// immediately before softmax in `logits_to_predictions`. Omitting it
     /// leaves logits uncapped — on E2B this peaked the softmax on the
@@ -92,6 +206,37 @@ pub struct VindexModelConfig {
     /// fix in `docs/diagnoses/shannon-cross-engine-divergence.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub norm_eps: Option<f64>,
+
+    // ── Fields that were dropped until 2026-08-06 ──
+    // Each is read by the forward pass and each was absent from this
+    // struct, so no vindex-served model ever saw it. All are
+    // `#[serde(default)]`, so vindexes written before this lands still
+    // load — they just keep answering `None`, which is what they
+    // already did. Re-extract to pick the values up.
+    /// RoPE scaling block, in the `config.json` shape
+    /// (`larql_models::RopeScaling::to_config_json`). Carried as raw
+    /// JSON rather than a typed mirror so the detector's parser stays
+    /// the single definition of how each family is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rope_scaling: Option<serde_json::Value>,
+    /// Gemma 2 attention-logit softcapping. Note `final_logit_softcapping`
+    /// was already persisted and this one was not — the pair splits
+    /// across the same model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attn_logit_softcapping: Option<f64>,
+    /// GPT-OSS clamp on both halves of the fused gate/up projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swiglu_limit: Option<f64>,
+    /// OLMoE / Mixtral router top-k renormalisation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub norm_topk_prob: Option<bool>,
+    /// Whether `lm_head` is tied to the embedding matrix. ROADMAP H5a
+    /// made an untied-but-missing `lm_head` a hard error in
+    /// `larql-models`; without this field that fix could not reach a
+    /// vindex-served model, which always answered `None` (= "absent, no
+    /// claim either way").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tie_word_embeddings: Option<bool>,
 }
 
 /// MoE (Mixture of Experts) configuration.
@@ -104,6 +249,14 @@ pub struct MoeConfig {
     /// Whether there's a shared expert always active (DeepSeek V2/V3).
     #[serde(default)]
     pub shared_expert: bool,
+    /// That branch's intermediate width, where the judgment declares one.
+    /// Carried beside the boolean rather than derived from
+    /// [`Self::moe_intermediate_size`]: the DeepSeek/Kimi lineage sizes
+    /// the branch as one wider FFN at `moe_intermediate_size * count`
+    /// while Qwen sizes it from its own key, and on Qwen1.5-MoE the two
+    /// answers differ fourfold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_expert_intermediate_size: Option<usize>,
     /// Router type (e.g., "top_k_softmax", "gemma4_top_k_softmax").
     #[serde(default = "default_router_type")]
     pub router_type: String,
@@ -134,11 +287,21 @@ impl VindexModelConfig {
             num_kv_heads: cfg.num_kv_heads,
             rope_base: cfg.rope_base,
             sliding_window: cfg.sliding_window,
+            use_sliding_window: cfg.use_sliding_window,
+            max_window_layers: cfg.max_window_layers,
+            position_embedding_type: cfg.position_embedding_type.clone(),
+            no_rope_layers: cfg.no_rope_layers.clone(),
+            no_rope_layer_interval: cfg.no_rope_layer_interval,
+            rope_interleaved: cfg.rope_interleaved,
+            use_mrope: cfg.use_mrope,
+            ffn_shape_name: cfg.ffn_shape_name.clone(),
+            is_llama_config: cfg.is_llama_config,
             moe: if arch.is_moe() {
                 Some(MoeConfig {
                     num_experts: arch.num_experts(),
                     top_k: arch.num_experts_per_token(),
                     shared_expert: arch.num_shared_experts() > 0,
+                    shared_expert_intermediate_size: arch.shared_expert_intermediate_size(),
                     router_type: arch.moe_router_type().into(),
                     moe_intermediate_size: if arch.moe_intermediate_size() > 0 {
                         Some(arch.moe_intermediate_size())
@@ -158,13 +321,30 @@ impl VindexModelConfig {
             attention_k_eq_v: cfg.attention_k_eq_v,
             num_kv_shared_layers: cfg.num_kv_shared_layers,
             per_layer_embed_dim: cfg.per_layer_embed_dim,
+            use_double_wide_mlp: cfg.use_double_wide_mlp,
+            vocab_size_per_layer_input: cfg.vocab_size_per_layer_input,
             rope_local_base: cfg.rope_local_base,
+            layer_rope_theta: cfg.layer_rope_theta.clone(),
             query_pre_attn_scalar: cfg.query_pre_attn_scalar,
+            qk_scale_factor: cfg.qk_scale_factor,
+            output_multiplier: cfg.output_multiplier,
+            post_norm_eps: cfg.post_norm_eps,
+            attention_bias: cfg.attention_bias,
+            hidden_act: cfg.hidden_act.clone(),
+            activation_situ_beta: cfg.activation_situ_beta,
+            activation_situ_linear_beta: cfg.activation_situ_linear_beta,
+            ffn_intermediate_size_by_layer: cfg.ffn_intermediate_size_by_layer.clone(),
+            max_position_embeddings: cfg.max_position_embeddings,
             final_logit_softcapping: cfg.final_logit_softcapping,
             attention_multiplier: cfg.attention_multiplier,
             residual_multiplier: cfg.residual_multiplier,
             logits_scaling: cfg.logits_scaling,
             norm_eps: cfg.norm_eps,
+            rope_scaling: cfg.rope_scaling.as_ref().map(|rs| rs.to_config_json()),
+            attn_logit_softcapping: cfg.attn_logit_softcapping,
+            swiglu_limit: cfg.swiglu_limit,
+            norm_topk_prob: cfg.norm_topk_prob,
+            tie_word_embeddings: cfg.tie_word_embeddings,
         }
     }
 }
@@ -172,6 +352,260 @@ impl VindexModelConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Inventory guard for the lossy projection this struct performs.
+    ///
+    /// `larql_models::ModelConfig` is the parsed checkpoint. Anything in
+    /// it that reaches the forward pass must either appear here or be
+    /// listed below with the reason it does not need to. The list is the
+    /// point: `rope_scaling` was missing for as long as this file
+    /// existed and nothing failed, because nothing was counting.
+    ///
+    /// If this test fails you added a field to `ModelConfig`. Decide
+    /// which bucket it is in — do not just add it to the exempt list to
+    /// get green.
+    #[test]
+    fn model_config_persists_every_forward_affecting_field() {
+        // Carried elsewhere in `VindexConfig`, not in `model_config`.
+        const CARRIED_AT_TOP_LEVEL: &[&str] = &[
+            "num_layers",
+            "hidden_size",
+            "intermediate_size",
+            "vocab_size",
+            // Round-trips as `VindexConfig.embed_scale`; duplicating it
+            // here would give one number two sources of truth.
+            "embedding_multiplier",
+        ];
+        // Carried inside the nested `moe` object.
+        const CARRIED_IN_MOE: &[&str] = &[
+            "num_experts",
+            "num_experts_per_token",
+            "num_shared_experts",
+            "shared_expert_intermediate_size",
+            "enable_moe_block",
+            "top_k_experts",
+            "moe_intermediate_size",
+            // K3-LATENTMOE-1: both reach the surface through
+            // `MoeExecution.routed_expert_form` — the width as the
+            // variant that selects the latent branch, the flag as the
+            // norm nested inside it. Carried as a FORM rather than two
+            // fields, so a norm without a width cannot be expressed.
+            "routed_expert_hidden_size",
+            "latent_moe_use_norm",
+        ];
+        // Read only to RESOLVE another field that IS carried, and
+        // deliberately not persisted itself: persisting both the input and
+        // the conclusion would give one fact two sources of truth, and a
+        // reader would have to know which one the executor honours.
+        const RESOLVED_INTO_ANOTHER_FIELD: &[&str] = &[
+            // `linear_attn_config.safe_gate` is an input to
+            // `ModelArchitecture::kda_gate_form`, whose CONCLUSION —
+            // `ExecutionSurface.kda_gate_form`, and `KdaOp.gate_form` —
+            // is what the container carries and the executor reads. The
+            // form is the forward-affecting fact; `safe_gate` is one of
+            // two config values the family combines to reach it.
+            "kda_safe_gate",
+        ];
+        // Genuinely not persisted yet. Each entry is a known gap, not an
+        // exemption: no vindex-served model can use these today.
+        const KNOWN_GAPS: &[&str] = &[
+            // Hyper-connections. The residual topology is REPRESENTED on
+            // the execution surface (wave 16) and explicitly not
+            // executable, so no vindex-served model can use it — and
+            // persisting it in the model config would claim a serving
+            // path that refuses. It moves here when wave 17 lowers it.
+            "hc_streams",
+            "hc_sinkhorn_iters",
+            "hc_eps",
+            // Attention residuals, and the same status for a sharper
+            // reason: the VINDEX3 execution surface carries the declared
+            // period (K3-ATTNRES-1) and the executor refuses the topology
+            // by name at preparation, so no vindex-served model can use
+            // it. Persisting the period in the legacy model config would
+            // claim a serving path that refuses.
+            "attn_res_block_size",
+            // The two K3 attention output gates (K3-REP-GATE-1): the KDA
+            // gate's FORM and MLA's gate reach VINDEX3 through the
+            // execution surface, never through this legacy round-trip.
+            "use_full_rank_gate",
+            "mla_use_output_gate",
+            // Multi-head latent attention (DeepSeek V2/V3). No MLA model
+            // is served from a vindex yet; serving one without these
+            // would silently rebuild the wrong attention geometry.
+            "kv_lora_rank",
+            "q_lora_rank",
+            "qk_nope_head_dim",
+            "qk_rope_head_dim",
+            "v_head_dim",
+            // Vision tower presence. The multimodal path loads its own
+            // config rather than reconstructing from the vindex.
+            "has_vision_config",
+            // Multimodal protocol + adapter geometry + drafter interface.
+            // These describe cross-component structure — which token ids
+            // stand in for other modalities, what the adapter projects,
+            // which target layers a drafter taps. Their home is the
+            // VINDEX3 system graph (format::vindex3, G2c), which carries
+            // components and interface edges explicitly; duplicating them
+            // in the per-model config would put the system topology in
+            // two places. No vindex-served model consumes them today.
+            "image_token_id",
+            "video_token_id",
+            "out_hidden_size",
+            "projector_hidden_size",
+            "projector_hidden_act",
+            "target_layer_ids",
+            "draft_block_size",
+            "mask_token_id",
+            // FFN/MLP bias terms. Same status as `attention_bias` had
+            // before it got a real field, except this legacy path's
+            // Q4K writer has no bias-tensor handling for the FFN
+            // projections at all yet — every checkpoint on hand (Granite
+            // 4.1 3B/8B/30B included) declares `false`, so no vindex-served
+            // model needs this today.
+            "mlp_bias",
+            // Hybrid linear-attention + multi-token-prediction geometry
+            // (Qwen3.5/Kimi-Linear-style — R2/Kimi-Linear rung,
+            // docs/k3-funnel.md). No forward pass anywhere in this crate,
+            // VINDEX1/2 or VINDEX3, executes a linear-attention layer or
+            // an MTP head yet — there is no served model this gap could
+            // silently mis-serve. `larql vindex3 plan` reports every one
+            // of these `unrepresented` (see
+            // `format::vindex3::plan::semantics::EXECUTION_SEMANTIC_KEYS`)
+            // rather than answering for it, which is what this list
+            // exists to force a decision about.
+            // The interleave itself, in the index-set spelling. Same
+            // status as the geometry beside it — VINDEX1/2 cannot execute
+            // a recurrent layer, so a container that dropped it could not
+            // mis-serve one. It reaches VINDEX3 through the resolved
+            // per-layer table (`LayerPolicy::declared_span`), not through
+            // this legacy round-trip.
+            "linear_attn_interleave",
+            // The hybrid Mamba2Attn estate (OuteAI): the conv-QKV
+            // attention geometry and the mamba_ssm lineage's MLP
+            // declaration (`mlp_intermediate_size: 0` = no MLP blocks,
+            // plus its padding/bias parameters). Same status as the
+            // linear-attention geometry above — VINDEX1/2 cannot execute
+            // a hybrid layer, so a container dropping these could not
+            // mis-serve one. They reach VINDEX3 through
+            // `ExecutionSurface.conv_qkv` and the per-layer operator
+            // table.
+            "conv_qkv_attn",
+            "conv_qkv_provenance",
+            "attn_causal",
+            "pad_vocab_size_multiple",
+            "fused_add_norm",
+            "mlp_intermediate_size",
+            "mlp_padding_size",
+            "use_mlp_bias",
+            // The MTP sub-stack's interleave. VINDEX1/2 has no MTP object
+            // at all, so a container dropping it could not mis-serve one.
+            "mtp_interleave",
+            // The relative-position scheme. VINDEX1/2's forward rotates or
+            // does not; it has no relative term, so a container dropping
+            // these could not serve one wrongly — it could not serve one
+            // at all. VINDEX3 carries it on the per-layer position policy.
+            // Router scoring function, carried verbatim beside the typed
+            // kind. VINDEX1/2 dispatches on the typed kind.
+            "router_activation",
+            // Declared MoE facts VINDEX1/2 has no field for. Its MoE
+            // config carries expert count, top-k and the router type; a
+            // branch scale, expert grouping, a dense prefix or a cadence
+            // period would each change the forward and none has a home
+            // here. Read so the plan can judge them, not so this path can
+            // serve them.
+            "routed_scaling_factor",
+            "expert_groups",
+            "topk_group",
+            "use_grouped_topk",
+            "moe_layer_freq",
+            "first_k_dense_replace",
+            "mla_use_nope",
+            "model_max_length",
+            "d_rel",
+            "rel_extent",
+            // KDA's geometry and decay clamp. Same status: VINDEX1/2
+            // cannot execute a recurrence, so a container dropping these
+            // could not mis-serve one. They reach VINDEX3 through the
+            // execution surface, not through this legacy round-trip.
+            "kda_geometry",
+            "kda_gate_lower_bound",
+            "kda_use_full_rank_gate",
+            "mla_use_output_gate",
+            "linear_conv_kernel_dim",
+            "linear_key_head_dim",
+            "linear_value_head_dim",
+            "linear_num_key_heads",
+            "linear_num_value_heads",
+            "mamba_ssm_dtype",
+            "attn_output_gate",
+            "output_gate_type",
+            "mtp_num_hidden_layers",
+            "mtp_use_dedicated_embeddings",
+            "mrope_interleaved",
+            "mrope_section",
+        ];
+
+        let src = include_str!("../../../larql-models/src/config/model_config.rs");
+        let start = src
+            .find("pub struct ModelConfig")
+            .expect("ModelConfig struct not found — did the file move?");
+        let body = &src[start..src[start..].find("\n}").unwrap() + start];
+        let model_fields: Vec<&str> = body
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub "))
+            .filter_map(|l| l.split(':').next())
+            .filter(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .collect();
+        assert!(
+            model_fields.len() > 30,
+            "parsed only {} ModelConfig fields — the scraper broke, which \
+             would make this guard silently vacuous",
+            model_fields.len()
+        );
+
+        // Scrape this struct from source rather than serialising an
+        // instance: every optional field carries
+        // `skip_serializing_if = "Option::is_none"`, so a `None`-valued
+        // instance serialises to almost nothing and the guard would
+        // report the entire struct as missing.
+        let own = include_str!("model.rs");
+        let vstart = own
+            .find("pub struct VindexModelConfig")
+            .expect("VindexModelConfig struct not found");
+        let vbody = &own[vstart..own[vstart..].find("\n}").unwrap() + vstart];
+        let persisted: Vec<&str> = vbody
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("pub "))
+            .filter_map(|l| l.split(':').next())
+            .filter(|n| !n.is_empty())
+            .collect();
+        assert!(
+            persisted.len() > 20,
+            "parsed only {} VindexModelConfig fields — the scraper broke",
+            persisted.len()
+        );
+
+        let mut unaccounted = Vec::new();
+        for f in &model_fields {
+            let known = persisted.contains(f)
+                || CARRIED_AT_TOP_LEVEL.contains(f)
+                || CARRIED_IN_MOE.contains(f)
+                || RESOLVED_INTO_ANOTHER_FIELD.contains(f)
+                || KNOWN_GAPS.contains(f)
+                // `model_type` / geometry share names across both structs.
+                || ["model_type", "head_dim", "num_q_heads", "num_kv_heads",
+                    "rope_base", "sliding_window", "norm_eps"].contains(f);
+            if !known {
+                unaccounted.push(*f);
+            }
+        }
+        assert!(
+            unaccounted.is_empty(),
+            "ModelConfig fields with no home in the vindex round-trip: {unaccounted:?}. \
+             A checkpoint declaring one of these is served without it — the defect is \
+             invisible to CPU-vs-Metal parity because both arms read the same index.json."
+        );
+    }
 
     fn minimal_model_config() -> VindexModelConfig {
         VindexModelConfig {
@@ -181,6 +615,15 @@ mod tests {
             num_kv_heads: 4,
             rope_base: 10000.0,
             sliding_window: None,
+            use_sliding_window: None,
+            max_window_layers: None,
+            position_embedding_type: None,
+            no_rope_layers: None,
+            no_rope_layer_interval: None,
+            rope_interleaved: None,
+            use_mrope: None,
+            ffn_shape_name: None,
+            is_llama_config: None,
             moe: None,
             global_head_dim: None,
             num_global_kv_heads: None,
@@ -190,6 +633,9 @@ mod tests {
             attention_k_eq_v: false,
             num_kv_shared_layers: None,
             per_layer_embed_dim: None,
+            use_double_wide_mlp: None,
+            vocab_size_per_layer_input: None,
+            layer_rope_theta: None,
             rope_local_base: None,
             query_pre_attn_scalar: None,
             final_logit_softcapping: None,
@@ -197,6 +643,7 @@ mod tests {
             residual_multiplier: None,
             logits_scaling: None,
             norm_eps: None,
+            ..Default::default()
         }
     }
 
@@ -241,6 +688,7 @@ mod tests {
             num_experts: 8,
             top_k: 2,
             shared_expert: false,
+            shared_expert_intermediate_size: None,
             router_type: "top_k_softmax".into(),
             moe_intermediate_size: Some(2048),
             hybrid: false,
@@ -380,6 +828,7 @@ mod tests {
             num_experts: 64,
             top_k: 6,
             shared_expert: true,
+            shared_expert_intermediate_size: None,
             router_type: "top_k_softmax".into(),
             moe_intermediate_size: None,
             hybrid: false,
@@ -418,6 +867,8 @@ mod tests {
         cfg.layer_types = Some(vec!["sliding_attention".into(), "full_attention".into()]);
         cfg.num_kv_shared_layers = Some(2);
         cfg.per_layer_embed_dim = Some(256);
+        cfg.use_double_wide_mlp = Some(true);
+        cfg.vocab_size_per_layer_input = Some(262144);
         cfg.rope_local_base = Some(10_000.0);
         cfg.query_pre_attn_scalar = Some(1.0);
         cfg.final_logit_softcapping = Some(30.0);
@@ -435,9 +886,71 @@ mod tests {
         assert_eq!(back.layer_types.as_ref().map(|v| v.len()), Some(2));
         assert_eq!(back.num_kv_shared_layers, Some(2));
         assert_eq!(back.per_layer_embed_dim, Some(256));
+        assert_eq!(back.use_double_wide_mlp, Some(true));
+        assert_eq!(back.vocab_size_per_layer_input, Some(262144));
         assert_eq!(back.rope_local_base, Some(10_000.0));
         assert_eq!(back.query_pre_attn_scalar, Some(1.0));
         assert_eq!(back.final_logit_softcapping, Some(30.0));
+    }
+
+    /// The G2b declared scalars must survive the vindex round trip — same
+    /// contract as every other forward-affecting field.
+    #[test]
+    fn declared_scaling_scalars_round_trip() {
+        let mut cfg = minimal_model_config();
+        cfg.qk_scale_factor = Some(3.87);
+        cfg.output_multiplier = Some(0.196);
+        cfg.post_norm_eps = Some(1e-8);
+        cfg.attention_bias = Some(false);
+        cfg.hidden_act = Some("silu".to_string());
+        cfg.activation_situ_beta = Some(4.0);
+        cfg.activation_situ_linear_beta = Some(25.0);
+        cfg.max_position_embeddings = Some(131072);
+
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: VindexModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.qk_scale_factor, Some(3.87));
+        assert_eq!(back.output_multiplier, Some(0.196));
+        assert_eq!(back.post_norm_eps, Some(1e-8));
+        assert_eq!(back.attention_bias, Some(false));
+        assert_eq!(back.hidden_act.as_deref(), Some("silu"));
+        assert_eq!(back.activation_situ_beta, Some(4.0));
+        assert_eq!(back.activation_situ_linear_beta, Some(25.0));
+        assert_eq!(back.max_position_embeddings, Some(131072));
+    }
+
+    /// The per-layer position policy must survive the whole round trip:
+    /// checkpoint → arch → vindex `model_config` → reconstructed arch. A
+    /// NoPE layer (declared `layer_rope_theta[i] == 0`) that comes back
+    /// rotary is the served-with-full-rotation defect this field exists to
+    /// prevent — invisible to CPU-vs-Metal parity because both arms read
+    /// the same `index.json`.
+    #[test]
+    fn nope_position_policy_survives_the_vindex_round_trip() {
+        use larql_models::config::PositionPolicy;
+        let source = larql_models::detect_from_json(&serde_json::json!({
+            "model_type": "some_hybrid_nope_model",
+            "hidden_size": 64,
+            "num_hidden_layers": 4,
+            "intermediate_size": 256,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 2,
+            "layer_rope_theta": [500000.0, 500000.0, 500000.0, 0.0]
+        }));
+        assert_eq!(
+            source.position_policy_for_layer(3),
+            PositionPolicy::None,
+            "precondition: the source arch resolves the sentinel"
+        );
+
+        let persisted = VindexModelConfig::from_arch(source.as_ref());
+        let json = serde_json::to_string(&persisted).unwrap();
+        let back: VindexModelConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.layer_rope_theta,
+            Some(vec![500000.0, 500000.0, 500000.0, 0.0]),
+            "array must persist verbatim, sentinel included"
+        );
     }
 
     #[test]

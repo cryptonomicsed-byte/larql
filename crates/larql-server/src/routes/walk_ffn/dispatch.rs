@@ -77,21 +77,19 @@ pub(crate) fn run_walk_ffn(
     state: &AppState,
     req: &WalkFfnRequest,
 ) -> Result<serde_json::Value, ServerError> {
-    let model = state
-        .model(None)
-        .ok_or_else(|| ServerError::NotFound("no model loaded".into()))?;
+    let model = state.v2_or_unsupported(None)?;
 
     let hidden = model.config.hidden_size;
     validate_residual(req, hidden)?;
 
     let scan_layers = collect_scan_layers(req)?;
-    validate_owned(model, &scan_layers)?;
+    validate_owned(&model, &scan_layers)?;
 
     let start = std::time::Instant::now();
 
     if req.full_output {
-        run_full_output(model, req, &scan_layers, start)
+        run_full_output(&model, req, &scan_layers, start)
     } else {
-        run_features_only(model, req, &scan_layers, start)
+        run_features_only(&model, req, &scan_layers, start)
     }
 }

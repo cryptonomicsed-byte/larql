@@ -1,0 +1,73 @@
+{
+ "wave": 8,
+ "name": "partial-rotary-factor-inside-rope-parameters",
+ "written": "2026-09-03",
+ "written_before": "any code. Reach measured over all 109 cached plans after wave 7.",
+ "the_fix": "`larql-models::detect::parser` reads `partial_rotary_factor` from `rope_parameters.full_attention` (Gemma 4) and then from the text config's top level \u2014 never from `rope_parameters.partial_rotary_factor`, which is where transformers 5.5.0 reads it (`config.rope_parameters.get(\"partial_rotary_factor\", 1.0)`, modeling_qwen3_5.py:125). Qwen3.8-27B declares the key at BOTH levels and is GREEN; every Qwen3.5 declares it only inside `rope_parameters` and loses the fraction, so no layer carries a rotary fraction, `probe_partial_rotary_factor` and `mrope_of` both answer None, and three leaves refuse. Read the `rope_parameters` spelling, with the same precedence the reference uses.",
+ "why_not_the_cluster": "position_rope has reach 48 and position_mrope reach 7; this fix reaches 6 rows, all Qwen3.5, and clears 3.",
+ "mechanism_check": "With the fraction present, mrope_of closes: sum([11,11,10]) * 2 = 64 = 256 * 0.25 \u2014 the identity the probe asserts against the component's own head_dim.",
+ "predicted_to_go_green": [
+  "Qwen/Qwen3.5-0.8B",
+  "Qwen/Qwen3.5-9B",
+  "Qwen/Qwen3.5-27B"
+ ],
+ "predicted_to_improve_and_stay_red": {
+  "Qwen/Qwen3.5-35B-A3B": "6 -> 3 (hidden_act, num_experts_per_tok, shared_expert_intermediate_size remain)",
+  "Qwen/Qwen3.5-122B-A10B": "6 -> 3",
+  "Qwen/Qwen3.5-397B-A17B": "6 -> 3"
+ },
+ "predicted_unmoved_though_they_declare_the_key": {
+  "Qwen/Qwen3.8-Flash-Next": "36 -> 36: its partial_rotary_factor already lowers (declared at both levels); its mrope leaves block for another reason",
+  "nvidia/NVIDIA-Nemotron-3-*": "top-level spelling, blocks because no component is built for nemotron_h",
+  "zai-org/GLM-4.7-Flash": "top-level spelling, same"
+ },
+ "predicted_after": {
+  "GREEN": 31,
+  "AMBER": 7,
+  "RED": 71,
+  "BUG": 0,
+  "silent_drops": 0,
+  "text_closure_blockers": 1091
+ },
+ "rows_whose_blocker_count_changes": 6,
+ "falsifiers": [
+  "any row outside the six moving",
+  "any Qwen3.5 dense row staying red \u2014 would mean the mrope identity does not close on this head geometry",
+  "BUG > 0"
+ ],
+ "engine_note": "Outside VINDEX3 this is a fail-open wrong answer: the engine path would rotate all 256 head dims of a Qwen3.5 layer instead of 64. VINDEX3 refuses; the engine does not. The fix lands in the shared parser so both doors read the reference's spelling.",
+ "result": {
+  "scored_on": "2026-09-03",
+  "outcome_semantics_version": 7,
+  "predicted_clears": 3,
+  "actual_clears": 3,
+  "hit": [
+   "Qwen/Qwen3.5-0.8B",
+   "Qwen/Qwen3.5-9B",
+   "Qwen/Qwen3.5-27B"
+  ],
+  "missed": [],
+  "unpredicted": [],
+  "regressions": [],
+  "rows_whose_blocker_count_changed": {
+   "Qwen/Qwen3.5-0.8B": "3 -> 0",
+   "Qwen/Qwen3.5-9B": "3 -> 0",
+   "Qwen/Qwen3.5-27B": "3 -> 0",
+   "Qwen/Qwen3.5-35B-A3B": "6 -> 3",
+   "Qwen/Qwen3.5-122B-A10B": "6 -> 3",
+   "Qwen/Qwen3.5-397B-A17B": "6 -> 3"
+  },
+  "after": {
+   "GREEN": 31,
+   "AMBER": 7,
+   "RED": 71,
+   "BUG": 0,
+   "silent_drops": 0,
+   "text_closure_blockers": 1091
+  },
+  "predicted_after_matched": true,
+  "verdict": "EXACT \u2014 every arm, including the three rows predicted to stay red at exactly 3 and the three declared-but-unmoved rows (Flash-Next, Nemotron, GLM-4.7).",
+  "controls": "Both new tests (larql-models nested-only parse; larql-vindex nested-only lowering) were run BEFORE the parser change and failed with the corpus's own message: `rule claims lowered ... but no built component answered the probe`. After the change both pass. Full sweep re-planned all 117 rows on the semantics-7 binary in 43 s.",
+  "fix_as_landed": "detect/parser.rs: precedence top level -> rope_parameters.full_attention -> rope_parameters, mirroring standardize_rope_params (the reference copies the top-level key INTO the block, overwriting). Pinned by `the_flat_partial_rotary_spelling_overrides_the_nested_one`."
+ }
+}

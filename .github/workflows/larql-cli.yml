@@ -40,6 +40,21 @@ on:
       - '.github/workflows/larql-cli.yml'
   workflow_dispatch: {}
 
+# Supersede in-flight pull-request runs: pushing a new commit to a PR
+# cancels the runs still compiling the previous one.
+#
+# Non-PR runs (main pushes, schedules, manual dispatch) are keyed by
+# `run_id`, which is unique per run, so they are each alone in their
+# group. That is deliberate and not the same as `cancel-in-progress:
+# false`: a concurrency group holds at most one running and one pending
+# run, and a newer pending run EVICTS the older pending one. Grouping
+# every main push under `refs/heads/main` would therefore still destroy
+# the CI record for an intermediate main commit when merges land close
+# together, with cancellation disabled or not.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: test - ${{ matrix.os }}
@@ -52,7 +67,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-14]
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
@@ -82,16 +97,27 @@ jobs:
         shell: pwsh
         run: choco install protoc -y --no-progress
 
-      - name: Cache cargo registry + build artefacts
-        uses: actions/cache@v5
+      - name: Cache cargo registry (downloads only, never target/)
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-cli-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-reg2-cli-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-cli-
+            ${{ runner.os }}-cargo-reg2-cli-
+
+      - name: No compiled workspace artefacts may be restored
+        shell: bash
+        run: |
+          # The cache above carries downloads only. A target/ restored from
+          # another commit can satisfy a link against stale code, so a green
+          # matrix would be evidence about an artefact that is not in this
+          # commit. Fail loudly rather than build on one.
+          if [ -e target ]; then
+            echo "::error::target/ was restored from cache - the cache key or path is wrong"
+            exit 1
+          fi
 
       - name: Format check
         run: cargo fmt -p larql-cli -- --check
@@ -104,12 +130,26 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo check -p larql-cli --bins --tests
 
-      # Clippy is intentionally skipped: as of 2026-05-10 `larql-cli`
-      # carries ~82 pre-existing errors under default features and ~112
-      # under `--no-default-features` (mostly `large_enum_variant` and
-      # `dead_code` on metal-only paths). Re-enable once that backlog
-      # is cleared; the other crates' workflows already enforce
-      # `clippy -- -D warnings`.
+      # Re-enabled 2026-08-06 (issue #169). The backlog this step was
+      # disabled for on 2026-05-10 — ~82 errors under default features and
+      # ~112 under `--no-default-features`, mostly `large_enum_variant` and
+      # `dead_code` on metal-only paths — has since been cleared by other
+      # work. Both feature shapes now report zero under `-D warnings`.
+      #
+      # `--no-deps` matches the other crates' workflows: it keeps the gate
+      # on larql-cli's own code, so a lint that fires in a path dependency
+      # reds that dependency's workflow rather than this one.
+      #
+      # The feature split mirrors the Check steps above, and for the same
+      # reason: `gpu` pulls in larql-compute-metal, which only exists on
+      # macOS.
+      - name: Clippy (CPU only) on Linux/Windows
+        if: runner.os != 'macOS'
+        run: cargo clippy -p larql-cli --bins --tests --no-default-features --no-deps -- -D warnings
+
+      - name: Clippy (default features incl. gpu) on macOS
+        if: runner.os == 'macOS'
+        run: cargo clippy -p larql-cli --bins --tests --no-deps -- -D warnings
 
       - name: Tests (CPU only) on Linux/Windows
         if: runner.os != 'macOS'
@@ -119,13 +159,29 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo test -p larql-cli
 
+      # R3B: validates the checked-out PR's own registry/index.json +
+      # registry/models/*.json, through the exact assembly/validation
+      # code production_registry() uses (include_str! embeds whatever
+      # this checkout has at build time) — never a parallel checker
+      # that could drift from what the shipped binary actually accepts.
+      # Runs on all three OSes so a platform-specific path bug (the
+      # Windows-absolute-path class registry/reference.rs already hit
+      # once) shows up here too, not just in unit tests.
+      - name: Registry check (CPU only) on Linux/Windows
+        if: runner.os != 'macOS'
+        run: cargo run -p larql-cli --no-default-features -- registry check
+
+      - name: Registry check (default features) on macOS
+        if: runner.os == 'macOS'
+        run: cargo run -p larql-cli -- registry check
+
   coverage:
     name: coverage - ubuntu
     runs-on: ubuntu-latest
     timeout-minutes: 35
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable

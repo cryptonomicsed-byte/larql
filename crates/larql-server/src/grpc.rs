@@ -21,6 +21,19 @@ pub struct VindexGrpcService {
     pub state: Arc<AppState>,
 }
 
+impl VindexGrpcService {
+    /// The bound VINDEX2 model, in gRPC's vocabulary: nothing bound is
+    /// `NotFound`, a VINDEX3 container is `Unimplemented` naming the
+    /// generation — never `NotFound`, which would present a bound model
+    /// as absent.
+    fn v2_model(&self) -> Result<Arc<crate::state::LoadedModel>, Status> {
+        self.state.v2_or_unsupported(None).map_err(|e| match e {
+            crate::error::ServerError::Unsupported(msg) => Status::unimplemented(msg),
+            other => Status::not_found(other.message().to_string()),
+        })
+    }
+}
+
 #[tonic::async_trait]
 impl VindexService for VindexGrpcService {
     async fn health(
@@ -45,10 +58,7 @@ impl VindexService for VindexGrpcService {
         _request: Request<StatsRequest>,
     ) -> Result<Response<StatsResponse>, Status> {
         self.state.bump_requests();
-        let model = self
-            .state
-            .model(None)
-            .ok_or_else(|| Status::not_found("no model loaded"))?;
+        let model = self.v2_model()?;
 
         let config = &model.config;
         let total_features: usize = config.layers.iter().map(|l| l.num_features).sum();
@@ -88,11 +98,7 @@ impl VindexService for VindexGrpcService {
     ) -> Result<Response<DescribeResponse>, Status> {
         self.state.bump_requests();
         let req = request.into_inner();
-        let model = self
-            .state
-            .model(None)
-            .ok_or_else(|| Status::not_found("no model loaded"))?;
-        let model = Arc::clone(model);
+        let model = self.v2_model()?;
 
         let result = tokio::task::spawn_blocking(move || grpc_describe(&model, &req))
             .await
@@ -104,11 +110,7 @@ impl VindexService for VindexGrpcService {
     async fn walk(&self, request: Request<WalkRequest>) -> Result<Response<WalkResponse>, Status> {
         self.state.bump_requests();
         let req = request.into_inner();
-        let model = self
-            .state
-            .model(None)
-            .ok_or_else(|| Status::not_found("no model loaded"))?;
-        let model = Arc::clone(model);
+        let model = self.v2_model()?;
 
         let result = tokio::task::spawn_blocking(move || grpc_walk(&model, &req))
             .await
@@ -123,11 +125,7 @@ impl VindexService for VindexGrpcService {
     ) -> Result<Response<SelectResponse>, Status> {
         self.state.bump_requests();
         let req = request.into_inner();
-        let model = self
-            .state
-            .model(None)
-            .ok_or_else(|| Status::not_found("no model loaded"))?;
-        let model = Arc::clone(model);
+        let model = self.v2_model()?;
 
         let result = tokio::task::spawn_blocking(move || grpc_select(&model, &req))
             .await
@@ -142,16 +140,12 @@ impl VindexService for VindexGrpcService {
     ) -> Result<Response<InferResponse>, Status> {
         self.state.bump_requests();
         let req = request.into_inner();
-        let model = self
-            .state
-            .model(None)
-            .ok_or_else(|| Status::not_found("no model loaded"))?;
+        let model = self.v2_model()?;
 
         if model.infer_disabled {
             return Err(Status::unavailable("inference disabled (--no-infer)"));
         }
 
-        let model = Arc::clone(model);
         let result = tokio::task::spawn_blocking(move || grpc_infer(&model, &req))
             .await
             .map_err(|e| Status::internal(e.to_string()))??;
@@ -164,11 +158,7 @@ impl VindexService for VindexGrpcService {
         _request: Request<RelationsRequest>,
     ) -> Result<Response<RelationsResponse>, Status> {
         self.state.bump_requests();
-        let model = self
-            .state
-            .model(None)
-            .ok_or_else(|| Status::not_found("no model loaded"))?;
-        let model = Arc::clone(model);
+        let model = self.v2_model()?;
 
         let result = tokio::task::spawn_blocking(move || grpc_relations(&model))
             .await
@@ -183,11 +173,7 @@ impl VindexService for VindexGrpcService {
     ) -> Result<Response<WalkFfnResponse>, Status> {
         self.state.bump_requests();
         let req = request.into_inner();
-        let model = self
-            .state
-            .model(None)
-            .ok_or_else(|| Status::not_found("no model loaded"))?;
-        let model = Arc::clone(model);
+        let model = self.v2_model()?;
 
         let result = tokio::task::spawn_blocking(move || grpc_walk_ffn(&model, &req))
             .await
@@ -204,11 +190,7 @@ impl VindexService for VindexGrpcService {
     ) -> Result<Response<Self::StreamDescribeStream>, Status> {
         self.state.bump_requests();
         let req = request.into_inner();
-        let model = self
-            .state
-            .model(None)
-            .ok_or_else(|| Status::not_found("no model loaded"))?;
-        let model = Arc::clone(model);
+        let model = self.v2_model()?;
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 

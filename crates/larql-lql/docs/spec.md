@@ -1,7 +1,7 @@
 # LQL — Lazarus Query Language Specification
 
 **Version:** 0.4  
-**Date:** 2026-04-11  
+**Date:** 2026-08-30 (0.4 first published 2026-04-11; §4's VINDEX3 backend content tracks the 3.0 Candidate spec)  
 **Status:** Draft  
 **Implementation target:** `larql-lql` crate (Rust)  
 **Companion:** `larql-knowledge` spec (data pipeline)
@@ -368,6 +368,7 @@ EXPLAIN WALK "The capital of France is"
 INFER <prompt>
     [ROUTE VERIFY [FALLBACK] [TOPK <n>] [EXIT]]
     [TOP <n>]
+    [GENERATE <n>]
     [COMPARE]
 
 -- Full forward pass with attention. Requires attention weights.
@@ -412,6 +413,13 @@ INFER "The capital of Persia is" ROUTE VERIFY FALLBACK TOPK 8 TOP 3;
 
 -- Early-exit: emit the stored target the moment the verified hit fires.
 INFER "The capital of Atlantis is" ROUTE VERIFY EXIT TOP 3;
+
+-- GENERATE <n>: greedy autoregressive continuation of <n> tokens
+--   through the bound runtime. Currently VINDEX3 bindings only (the
+--   proven seam: batch prefill -> caller-owned KV state -> resumed
+--   decode); other backends refuse with a clear message. Output is
+--   the generated ids, the detokenised text, and timings.
+INFER "The capital of France is" GENERATE 16;
 ```
 
 ```
@@ -705,6 +713,31 @@ SHOW ENTITIES
 
 SHOW MODELS;
 
+SHOW COMPONENTS;
+
+-- VINDEX3: the system graph's components — id, role, layer count,
+-- hidden size, and the per-operator attention census — reconstructed
+-- purely from the container. Nothing is inferred from tensor names.
+
+SHOW REPRESENTATIONS ["<object>"];
+
+-- VINDEX3: the physically present representation directory, optionally
+-- filtered to entries whose logical object (or entry id) contains the
+-- given substring. Presence is physical: a variant listed here exists
+-- as bytes; selecting one not listed fails closed (§9.1 of the ABI).
+
+SHOW PROVENANCE ["<object>"];
+
+-- VINDEX3: hashes and lineage per directory entry — payload and
+-- segment SHA-256 (printed whole), what an entry was compiled from,
+-- and what model the container derives from.
+
+SHOW AUTHORITY;
+
+-- VINDEX3: the container's own authority declaration — canonical
+-- (source bytes present; derived representations recompilable) or
+-- derived (executable; not re-compilable) — and its declared profiles.
+
 SHOW PATCHES;
 
 SHOW COMPACT STATUS;
@@ -776,6 +809,16 @@ TRACE "The capital of France is"
 -- All token positions, all layers, written to file
 ```
 
+**VINDEX3 bindings**: plain `TRACE <prompt>` runs the *observational*
+trace — subscribers on the canonical executor's operation boundaries
+(embed, per-layer attention/FFN completion, output head), followed by
+the greedy next token. Observation is subscription, never a second
+executor: the observed and unobserved paths are gated bit-identical.
+The richer clauses above (`FOR`, `DECOMPOSE`, `LAYERS`, `POSITIONS`,
+`SAVE`) are V2 residual-trace features and refuse on a V3 binding
+rather than silently no-op; they arrive later as further detail
+levels on the same observation seam.
+
 > Planned: `TRACE ... DIFF <prompt_b>` (cross-prompt comparison),
 > tiered SAVE formats (`FORMAT boundary | context`, `TIER`, `WINDOW`),
 > and `BOUNDARY OPEN` / `BOUNDARY <path> AT <n>` boundary stores.
@@ -805,9 +848,12 @@ WHERE layer >= 20 AND layer <= 30
 
 ## 4. Backend Architecture
 
-LQL abstracts over two backends through a common trait. Every query statement works against either backend.
+LQL abstracts over three local backends (plus the remote HTTP
+forwarder). The backend is decided ONCE, at `USE` time, from the
+artifact itself; no statement executor re-detects the format
+afterwards.
 
-### 4.1 The Two Backends
+### 4.1 The Backends
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -815,43 +861,109 @@ LQL abstracts over two backends through a common trait. Every query statement wo
 │         (same AST, same statements, same output)             │
 └───────────────────────┬──────────────────────────────────────┘
                         │
-              ┌─────────┴─────────┐
-              ▼                   ▼
-   ┌──────────────────┐  ┌──────────────────┐
-   │  VindexBackend   │  │  WeightBackend   │
-   │                  │  │                  │
-   │  Pre-extracted   │  │  Live safetensors│
-   │  KNN index       │  │  Dense matmul    │
-   │  0.98ms/layer    │  │  ~6ms/layer      │
-   │  Read + write    │  │  Read only       │
-   │  No model needed │  │  Model in memory │
-   │  (model optional │  │                  │
-   │   for INFER)     │  │                  │
-   └──────────────────┘  └──────────────────┘
+         ┌──────────────┼──────────────┐
+         ▼              ▼              ▼
+┌────────────────┐ ┌────────────────┐ ┌────────────────────┐
+│  VindexBackend │ │  WeightBackend │ │  Vindex3Backend    │
+│                │ │                │ │                    │
+│  Pre-extracted │ │ Live           │ │ Executable program │
+│  KNN index     │ │ safetensors    │ │ (ComponentOpPlan)  │
+│  0.98ms/layer  │ │ Dense matmul   │ │ + operand store    │
+│  Read + write  │ │ Read only      │ │ Read + execute     │
+│  No model      │ │ Model in       │ │ No ModelWeights,   │
+│  needed        │ │ memory         │ │ no VectorIndex, no │
+│                │ │                │ │ ModelArchitecture  │
+└────────────────┘ └────────────────┘ └────────────────────┘
 ```
+
+`USE "path"` binds a VINDEX3 container when the container's own
+generation marker (`index.json` schema, V3 spanning 3–4) says so — never
+by falling back from a failed V2 load. The bound runtime exposes declared facts
+(the executable plan) and capabilities; every V3 statement below
+consumes those, and nothing reconstructs architecture from weights or
+family metadata.
 
 ### 4.2 Backend Capabilities
 
-| Statement | Vindex | Direct Weights |
-|---|---|---|
-| WALK (feature scan) | ✅ KNN (0.98ms/layer) | ✅ Dense matmul (~6ms/layer) |
-| DESCRIBE | ✅ Pre-computed edges + labels | ✅ On-the-fly per entity |
-| SELECT | ✅ Index lookup | ✅ Live gate×embedding scan |
-| EXPLAIN WALK | ✅ Walk trace from index | ✅ Walk trace from matmul |
-| INFER | ✅ With `--include-weights` | ✅ Full forward pass |
-| EXPLAIN INFER | ✅ With `--include-weights` | ✅ Full forward pass + trace |
-| SHOW RELATIONS | ✅ From label cache | ✅ Cluster on-the-fly (slow) |
-| SHOW LAYERS | ✅ From metadata | ✅ Computed from weights |
-| SHOW FEATURES | ✅ Index lookup | ✅ Dense scan per layer |
-| STATS | ✅ Instant | ✅ Computed |
-| INSERT | ✅ | ❌ Error: "requires vindex" |
-| DELETE | ✅ | ❌ Error: "requires vindex" |
-| UPDATE | ✅ | ❌ Error: "requires vindex" |
-| BEGIN/SAVE/APPLY PATCH | ✅ | ❌ Error: "requires vindex" |
-| SHOW PATCHES | ✅ | ❌ |
-| COMPILE | ✅ | ❌ Error: "requires vindex" |
-| DIFF | ✅ | ⚠️ One side can be weights |
-| MERGE | ✅ | ❌ Error: "requires vindex" |
+| Statement | Vindex | Direct Weights | VINDEX3 |
+|---|---|---|---|
+| WALK (feature scan) | ✅ KNN (0.98ms/layer) | ✅ Dense matmul (~6ms/layer) | ✅ role `feature_gate` scan |
+| DESCRIBE | ✅ Pre-computed edges + labels | ✅ On-the-fly per entity | ✅ via semantic roles |
+| SELECT | ✅ Index lookup | ✅ Live gate×embedding scan | ✅ via semantic roles |
+| EXPLAIN WALK | ✅ Walk trace from index | ✅ Walk trace from matmul | ✅ via semantic roles |
+| INFER | ✅ With `--include-weights` | ✅ Full forward pass | ✅ Batch-prefill logits, top-k |
+| INFER … GENERATE n | ❌ | ❌ | ✅ Greedy continuation (runtime seam) |
+| EXPLAIN INFER | ✅ With `--include-weights` | ✅ Full forward pass + trace | ✅ Static plan explanation (§4.4) |
+| TRACE | ✅ Residual decomposition | ✅ | ✅ Observational (plain form only) |
+| SHOW RELATIONS | ✅ From label cache | ✅ Cluster on-the-fly (slow) | ✅ raw tokens (no labels yet) |
+| SHOW LAYERS | ✅ From metadata | ✅ Computed from weights | ✅ Per-layer plan facts |
+| SHOW FEATURES | ✅ Index lookup | ✅ Dense scan per layer | ✅ via semantic roles |
+| STATS | ✅ Instant | ✅ Computed | ✅ Container's own authority |
+| SHOW COMPONENTS | ❌ V3 concept | ❌ V3 concept | ✅ from the system graph |
+| SHOW REPRESENTATIONS | ❌ V3 concept | ❌ V3 concept | ✅ the physical directory |
+| SHOW PROVENANCE | ❌ V3 concept | ❌ V3 concept | ✅ digests + lineage |
+| SHOW AUTHORITY | ❌ V3 concept | ❌ V3 concept | ✅ the index's declaration |
+| INSERT (MODE KNN, default) | ✅ | ❌ Error: "requires vindex" | ✅ key from plan taps (§4.4) |
+| INSERT MODE COMPOSE | ✅ | ❌ Error: "requires vindex" | ✅ via the operand-source seam¹ |
+| DELETE | ✅ | ❌ Error: "requires vindex" | ✅ overlay tombstones |
+| UPDATE | ✅ | ❌ Error: "requires vindex" | ✅ overlay meta overrides |
+| BEGIN/SAVE/APPLY/REMOVE PATCH | ✅ | ❌ Error: "requires vindex" | ✅ vector-free patches (all-or-nothing) |
+| SHOW PATCHES | ✅ | ❌ | ✅ overlay's applied list |
+| COMPILE INTO VINDEX | ✅ | ❌ Error: "requires vindex" | ✅ bake via the operand-source seam² |
+| COMPILE INTO MODEL | ✅ | ❌ Error: "requires vindex" | ❌ container→checkpoint export, later |
+| DIFF | ✅ | ⚠️ One side can be weights | ✅ logical-first³ (+ PHYSICAL mode) |
+| MERGE | ✅ | ❌ Error: "requires vindex" | ✅ V2 source into the overlay |
+| COMPACT MINOR/MAJOR | ✅ LSM tier promotion | ❌ | ❌ tier model is V2's; later |
+| COMPACT INTO VINDEX | — (V3 statement) | ❌ | ✅ physical reorganisation⁴ |
+
+A VINDEX3 refusal is a *capability* statement, not a format apology:
+the error names what the binding supports. Since V3-LQL-3A the browse
+surface (SELECT / DESCRIBE / WALK / EXPLAIN WALK / SHOW …) executes on
+V3 through the container's own semantic roles. Since V3-LQL-3B the
+default (KNN) INSERT, DELETE, UPDATE, MERGE, and the patch lifecycle
+execute too: the container stays immutable on disk and edits live in a
+**knowledge overlay** addressed by semantic identity — entity-keyed
+retrieval entries plus feature-slot meta overrides and tombstones
+carrying V2's tombstone/resurrection contract — with the KNN key
+captured from the plan's own execution taps and the same `.vlp` patch
+language V2 speaks: one patch file applies to either format
+— vector-bearing compose edits included since the compose rung: the
+overlay's gate/up rows and down columns reach execution through the
+**operand-source seam** (base representation + overlay override →
+effective operand), so a compose install alters what the program
+computes, WALK surfaces the slot, TRACE observes the same effective
+program, and REMOVE PATCH returns execution bit-for-bit to baseline.
+¹ The V3 compose install runs V2's full pipeline — clean-base capture
+(normed FFN-input tap), decoy suppression, batch refine from raw
+captures, probability-band balance, and the cross-fact regression
+check — with V2 as the staged parity oracle (identical scripts emit
+equivalent patches; directions within 1e-5, identical balance
+decisions). Remaining refusals: COMPILE/DIFF/COMPACT (lifecycle). The
+² `COMPILE CURRENT INTO VINDEX` on V3 materialises the overlay's
+effective operands into rewritten segments (untouched segments
+hard-linked), carries L0 knowledge as `knn_store.bin`, and the result
+binds with a zero-override overlay — behaviour comes from the stored
+bytes (equivalence-gated: INFER/GENERATE/TRACE/WALK exact). Refusals
+follow the derived-annotation authority: tombstones and meta-only
+relabels have no clean-container form and refuse rather than drop.
+³ V3 `DIFF` reports **model facts** — knowledge edges, feature-slot
+value changes (gate row / up row / down column), representation-level
+tensor changes, metadata — comparing EFFECTIVE states (`CURRENT` = the
+bound container plus its overlay). Gated as the COMPILE oracle in
+reverse: an overlay and its bake diff identically against any third
+side and diff each other as equivalent, while `DIFF … PHYSICAL` (the
+subordinate segment-hash report) shows the rewrite. Mixed-generation
+diffs and `INTO PATCH` are later rungs.
+⁴ `COMPACT INTO VINDEX` preserves meaning exactly while reorganising
+storage (today: garbage collection — unreferenced files dropped and
+named, referenced segments carried byte-identically). The logical
+DIFF is its proof instrument (`SemanticDiff(input, output) = ∅`), and
+it refuses while the session holds overlay state: COMPILE materialises
+meaning, COMPACT reorganises it — never a second compiler.
+The whole-language sweep test
+(`tests/vindex3_lql.rs::every_statement_is_sensible_on_a_v3_binding`)
+pins that every statement either executes or refuses this way — never
+a panic, never a misleading "no backend loaded".
 
 ### 4.3 Promotion: Weights → Vindex
 
@@ -867,6 +979,106 @@ Error: INSERT requires a vindex. Run:
   EXTRACT MODEL "google/gemma-3-4b-it" INTO "gemma3-4b.vindex";
   USE "gemma3-4b.vindex";
 ```
+
+### 4.4 The VINDEX3 Binding
+
+A VINDEX3 container is an **executable model program**: a closed,
+operand-verified `ComponentOpPlan` plus the operand bytes it names.
+The binding holds the opened runtime and (when the container carries
+`tokenizer.json`) the text capability — structurally no
+`ModelWeights`, `VectorIndex`, or `ModelArchitecture`, so the V2
+paths are unreachable from it, not merely avoided.
+
+Statement semantics on a V3 binding:
+
+- `USE "container"` — binds on the container's generation marker and
+  reports the container's self-declared name (`index.model`).
+- `STATS` — the program's authority: generation, component, execution
+  closure, layer count, sliding/full attention split, plan-derived KV
+  geometry, output head, tokenizer capability, supported statements.
+- `SHOW LAYERS` — per-layer attention facts off the plan (mode,
+  window, Q/KV heads, head dim).
+- **Browse (V3-LQL-3A)** — `SELECT` / `DESCRIBE` / `WALK` /
+  `EXPLAIN WALK` / `SHOW RELATIONS/FEATURES/ENTITIES` run against the
+  container's **query surface**
+  (`format::vindex3::knowledge::KnowledgeView`): semantic roles
+  (`feature_gate`, `feature_down`, `embedding`) bound to the
+  executable plan's operands and loaded through the same operand
+  store execution uses. No `VectorIndex` is manufactured and no V2
+  loader runs. Annotation semantics match the V2 extractor's
+  user-visible contract (`embed · feature_down`, top logit as
+  `c_score`), pinned by the **V2→V3 LQL compatibility gate**
+  (`tests/vindex3_v2_parity.rs`): one checkpoint realised as both
+  formats must report the same logical results for the same script —
+  reads (feature space, walks, DESCRIBE), mutations (identical
+  INSERT/DELETE/UPDATE/MERGE scripts leave identical logical state),
+  and patch stacking (replay order determines visible state). The gate
+  is the release criterion: VINDEX3 does not become the default
+  binding until every statement family V2 promises is green in it.
+- `INFER "…" [TOP n]` — single-step top-k next-token prediction from
+  batch-prefill logits. `INFER "…" GENERATE n` — greedy continuation
+  through the proven runtime seam (batch prefill into caller-owned
+  continuation state, resumed decode). Requires the tokenizer
+  capability; a tokenizer-less container binds and answers
+  `STATS`/`EXPLAIN` but refuses text inference.
+- `EXPLAIN INFER "…"` — static, deterministic rendering of the
+  structured `ExplainPlan` (larql-inference): execution-ordered ops
+  per layer, attention geometry, FFN kind, continuation geometry, and
+  operand provenance (`object → tensor → dtype/shape` — the exact
+  coordinates the operand store resolves at execution time). No
+  tokens run.
+- `TRACE "…"` — the observational trace: subscribers on the canonical
+  executor's step boundaries, then the greedy next token. Gated
+  bit-identical to untraced execution.
+
+Everything else refuses with the capability list. The refusals are
+the seed of a future `ModelCapabilities` surface, deliberately left
+as plain declared facts until `WALK`/`PATCH`-class pressure shapes
+the type.
+
+### 4.5 Capability Profiles
+
+A **capability profile** constrains what a session may execute. It is
+orthogonal to §4.2's backend capabilities: the backend matrix says what
+a binding *can* serve, the profile says what this session is *allowed*
+to ask of it. Both produce capability statements, never apologies.
+
+```
+Session::set_profile(CapabilityProfile::PublicExplorer)
+```
+
+The judgement runs at the head of `Session::execute` — after parsing,
+before any execution, ahead of the remote-transport fork, over the
+whole pipe tree. A statement a profile refuses returns
+`LqlError::Refused` (an embedding server maps it to 403: nothing
+failed; the profile does not serve this) and never begins: no
+auto-patch starts, no backend is consulted, no bytes are read.
+
+Two profiles exist:
+
+- **`FULL`** (default) — the whole language. The REPL's profile.
+- **`PUBLIC_EXPLORER`** — the public read surface, designed for a
+  hardened endpoint serving an immutable container:
+
+  | Permitted | Refused |
+  |---|---|
+  | `SHOW COMPONENTS / REPRESENTATIONS / PROVENANCE / AUTHORITY` | `INSERT / DELETE / UPDATE / MERGE / REBALANCE` |
+  | `SHOW RELATIONS / LAYERS / FEATURES / ENTITIES / MODELS` | `USE / EXTRACT / COMPILE / DIFF` (filesystem paths) |
+  | `DESCRIBE / WALK / SELECT / EXPLAIN / STATS` | `BEGIN / SAVE / APPLY / REMOVE PATCH`, `SHOW PATCHES` |
+  | `INFER [TOP n]`, `INFER GENERATE ≤ 32` | `COMPACT` family, `SHOW COMPACT STATUS`, `TRACE` |
+
+  The binding sequence is the embedding surface's: bind the published
+  container under `FULL` (USE is a lifecycle statement the public
+  profile refuses precisely because it names filesystem paths), then
+  tighten to `PUBLIC_EXPLORER` before the first foreign statement.
+  Note `SHOW MODELS` lists the process working directory — a public
+  deployment's working directory *is* its published catalogue.
+
+The `PUBLIC_EXPLORER` arm is an exhaustive `match` over `Statement`,
+mirroring the plan-capability module's fail-closed rule: a new
+statement does not compile until someone decides whether the public
+surface serves it. An unlisted statement defaulting to *allowed* is
+the one wrong default for a public endpoint.
 
 ---
 
@@ -1674,4 +1886,4 @@ The residual stream trace enables infinite context without KV cache. Boundary re
 
 370K tokens (Apollo 11 transcript): 55-110 MB vs 56 GB KV cache.
 
-**Status:** Implemented in `trace/` module. File formats: `.bin` (full chains), `.bndx` (boundaries), `.ctxt` (tiered context). Mmap'd, append-only, zero-copy. See `docs/residual-trace.md` and `docs/specs/trace-format-spec.md`.
+**Status:** Implemented in `trace/` module. File formats: `.bin` (full chains), `.bndx` (boundaries), `.ctxt` (tiered context). Mmap'd, append-only, zero-copy. See `docs/residual-trace.md` and `docs/residual-trace.md`.

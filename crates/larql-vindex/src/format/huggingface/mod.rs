@@ -69,7 +69,12 @@ pub(crate) const VINDEX_WEIGHT_FILES: &[&str] = &[
 
 pub mod discovery;
 pub mod download;
+/// Header-only checkpoint staging: admission without the weights.
+pub mod metadata_checkpoint;
 pub mod publish;
+/// Byte-range reads — the tier `download` is not.
+pub mod range;
+mod token;
 
 // Re-export the previous flat-module surface so callers don't have to
 // pick a submodule.
@@ -79,11 +84,11 @@ pub use discovery::{
 };
 pub use download::{
     download_hf_weights, resolve_hf_model_with_progress, resolve_hf_vindex,
-    resolve_hf_vindex_with_progress, DownloadProgress,
+    resolve_hf_vindex_complete, resolve_hf_vindex_with_progress, DownloadProgress,
 };
 pub use publish::{
-    publish_vindex, publish_vindex_with_opts, PublishCallbacks, PublishOptions,
-    SilentPublishCallbacks,
+    publish_vindex, publish_vindex_with_opts, set_repo_visibility, PublishCallbacks,
+    PublishOptions, PublishResult, SilentPublishCallbacks,
 };
 
 /// Check if a path is an `hf://` reference. Lives here (not under

@@ -34,6 +34,13 @@ use ndarray::{Array2, ArrayView2};
 /// CPU backend using BLAS (f32) and C kernel (Q4).
 pub struct CpuBackend;
 
+/// The CPU's ggml K-quant gemvs, executing stored blocks in place.
+///
+/// Distinct from [`pipeline::quant_format::QuantFormat::Q8_0`], which is
+/// a different layout under the same name — see the module docs.
+pub mod kquant_gemv;
+pub mod nvfp4_gemv;
+
 impl MatMul for CpuBackend {
     fn matmul(&self, a: ArrayView2<f32>, b: ArrayView2<f32>) -> Array2<f32> {
         ops::f32_matmul::matmul(a, b)
@@ -41,6 +48,18 @@ impl MatMul for CpuBackend {
 
     fn matmul_transb(&self, a: ArrayView2<f32>, b: ArrayView2<f32>) -> Array2<f32> {
         ops::f32_matmul::matmul_transb(a, b)
+    }
+
+    fn nvfp4_gemv(
+        &self,
+        packed: &[u8],
+        scales: &[u8],
+        tensor_scale: f32,
+        x: &[f32],
+        n: usize,
+        k: usize,
+    ) -> Option<Vec<f32>> {
+        nvfp4_gemv::nvfp4_gemv(packed, scales, tensor_scale, x, n, k)
     }
 }
 
@@ -88,7 +107,9 @@ impl QuantMatVec for CpuBackend {
         // Parallelised across rows with rayon for the matvec shapes
         // a decode step pulls (2560–8192 rows).
         let mut out = vec![0.0f32; num_rows];
-        ops::q4_common::q4k_matvec_into(&mut out, x, q4k_data, num_rows, hidden);
+        // Shape errors surface as `None`, the trait's contract for a
+        // backend that cannot compute the request.
+        ops::q4_common::q4k_matvec_into(&mut out, x, q4k_data, num_rows, hidden).ok()?;
         Some(out)
     }
 
@@ -131,7 +152,8 @@ impl QuantMatVec for CpuBackend {
         let mut out_b = vec![0.0f32; num_rows];
         ops::q4_common::q4k_dual_matvec_into(
             &mut out_a, &mut out_b, x, q4k_a, q4k_b, num_rows, hidden,
-        );
+        )
+        .ok()?;
         Some((out_a, out_b))
     }
 

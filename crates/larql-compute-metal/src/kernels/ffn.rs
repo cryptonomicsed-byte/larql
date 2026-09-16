@@ -20,7 +20,7 @@
 //! one of these in the same scope. Bundling removes 14 `pub` fields
 //! from the top-level `MetalBackend` struct.
 
-use metal::{ComputePipelineState, Device, Library};
+use metal::{Buffer, ComputeCommandEncoderRef, ComputePipelineState, Device, Library};
 
 use crate::kernels::KernelHandle;
 use crate::shaders;
@@ -30,6 +30,15 @@ pub struct FfnKernels {
     // Gated FFN activations (`act(gate) * up`).
     pub geglu_pipeline: ComputePipelineState,
     pub geglu_gelu_tanh_pipeline: ComputePipelineState,
+    /// GPT-OSS's clamped GLU with fused gate/up bias adds — the MoE
+    /// expert activation for `MoeGateRule::ClampedGlu` layers.
+    pub clamped_glu_bias_pipeline: ComputePipelineState,
+    /// Kimi-K3's SiTU-GLU combine (K3-ACT-1).
+    pub situ_glu_pipeline: ComputePipelineState,
+    /// GPU weighted MoE combine (`new_h = h_post_attn + Σ w·(out+bias)`)
+    /// for identity-combine policies — lets experts + next-layer
+    /// attention share one command buffer.
+    pub moe_weighted_combine_pipeline: ComputePipelineState,
 
     // Standard (non-gated) FFN activations.
     pub silu_pipeline: ComputePipelineState,
@@ -37,8 +46,9 @@ pub struct FfnKernels {
 
     // Q4_K gate+up (production + three opt-in variants).
     pub q4k_ffn_gate_up_pipeline: KernelHandle,
-    /// `LARQL_F16_ACC=1` opt-in. f16 inner accumulator on the legacy
-    /// 4sg gate+up.
+    /// `LARQL_F16_ACC=1` opt-in (requires `LARQL_GATE_UP_8SG=0` too —
+    /// the 8sg default discards it). f16 inner accumulator on the
+    /// legacy 4sg gate+up.
     pub q4k_ffn_gate_up_f16acc_pipeline: KernelHandle,
     /// `LARQL_GATE_UP_8SG=0` opts back to 4sg; this is the 8sg variant
     /// that the production alias resolves to today.
@@ -54,8 +64,11 @@ pub struct FfnKernels {
     pub q4k_geglu_gelu_tanh_down_pipeline: KernelHandle,
     pub q6k_geglu_silu_down_pipeline: KernelHandle,
     pub q6k_geglu_gelu_tanh_down_pipeline: KernelHandle,
-    /// Cached-activation Q6_K + GELU-tanh — `LARQL_FUSED_Q6K_DOWN=1`
-    /// opt-in. Currently no-op until kernel-level parity work lands.
+    /// "Cached-activation" Q6_K + GELU-tanh — **never dispatched**:
+    /// `LARQL_FUSED_Q6K_DOWN=1` binds the non-cached pipeline above,
+    /// and this kernel's body is a verbatim copy of it (it caches
+    /// nothing, contradicting its module doc; audit F21/F22).
+    /// Retire-or-implement is tracked on the larql-compute roadmap.
     pub q6k_geglu_gelu_tanh_down_cached_pipeline: KernelHandle,
 
     /// Per-Layer Embeddings gate-apply (Gemma 4 E2B): fused
@@ -73,6 +86,11 @@ impl FfnKernels {
         Self {
             geglu_pipeline: r::<shaders::geglu::SiluKernel>(device, library),
             geglu_gelu_tanh_pipeline: r::<shaders::geglu::GeluTanhKernel>(device, library),
+            clamped_glu_bias_pipeline: r::<shaders::geglu::ClampedGluBiasKernel>(device, library),
+            situ_glu_pipeline: r::<shaders::geglu::SituGluKernel>(device, library),
+            moe_weighted_combine_pipeline: r::<shaders::moe_weighted_combine::Kernel>(
+                device, library,
+            ),
 
             silu_pipeline: r::<shaders::activation::SiluKernel>(device, library),
             gelu_tanh_pipeline: r::<shaders::activation::GeluTanhKernel>(device, library),
@@ -107,4 +125,84 @@ impl FfnKernels {
             ),
         }
     }
+}
+
+/// Bind SiTU-GLU for one expert slot (K3-ACT-1).
+///
+/// One function for all three routed dispatch sites — they differ only in
+/// which scratch offsets they hand it, and a combine transcribed three
+/// times is three chances to transcribe it differently. The caller still
+/// owns the dispatch, because the three sites size their grids from
+/// different places.
+///
+/// **Expert biases are refused, not dropped.** `situ_glu` has no bias
+/// slots: Kimi-K3's experts are bias-free `nn.Linear`s, and the reference
+/// gives no composition of a bias with SiTU to transcribe. Ignoring a
+/// staged bias here would be the same silent substitution this rung
+/// exists to remove, so it asserts instead — reachable only from a SiTU
+/// checkpoint that ships expert biases, which would be new architecture
+/// and owes its own rung.
+#[allow(clippy::too_many_arguments)]
+pub fn bind_situ_glu(
+    enc: &ComputeCommandEncoderRef,
+    pipeline: &ComputePipelineState,
+    gate: (&Buffer, u64),
+    up: (&Buffer, u64),
+    out: (&Buffer, u64),
+    inter: u32,
+    beta: f32,
+    linear_beta: Option<f32>,
+    staged_biases: bool,
+) {
+    assert!(
+        !staged_biases,
+        "this layer stages per-expert gate/up biases and its combine is SiTU-GLU, which has no \
+         bias form in the reference; refusing rather than dropping them"
+    );
+    // `None` is a different function from an infinite bound, so the flag
+    // carries on the GPU exactly what `Option<f32>` carries on the CPU.
+    let has_linear: u32 = u32::from(linear_beta.is_some());
+    let linear = linear_beta.unwrap_or(1.0);
+
+    enc.set_compute_pipeline_state(pipeline);
+    enc.set_buffer(0, Some(gate.0), gate.1);
+    enc.set_buffer(1, Some(up.0), up.1);
+    enc.set_buffer(2, Some(out.0), out.1);
+    enc.set_bytes(3, 4, &inter as *const u32 as *const std::ffi::c_void);
+    enc.set_bytes(4, 4, &beta as *const f32 as *const std::ffi::c_void);
+    enc.set_bytes(5, 4, &linear as *const f32 as *const std::ffi::c_void);
+    enc.set_bytes(6, 4, &has_linear as *const u32 as *const std::ffi::c_void);
+}
+
+/// The one message every refusal of GLM-5.3-Flash's combine quotes —
+/// the admission gates and the three dispatch backstops behind them —
+/// so a caller reads the same sentence whichever surface caught it.
+pub const CLAMPED_GATED_REFUSAL: &str =
+    "no Metal expert-activation kernel for MoeGateRule::ClampedGated (GLM-5.3-Flash's \
+     clamped SwiGLU); the ClampedGlu shader computes a different function and must not \
+     stand in for it";
+
+/// Whether this registry has an expert-activation kernel for a routed
+/// layer's combine rule.
+///
+/// One rule has none: GLM-5.3-Flash's [`MoeGateRule::ClampedGated`] —
+/// clamp the gate and up, then plain SwiGLU. The nearest shader,
+/// `clamped_glu_bias`, computes `(u+1)·g·σ(αg)`, which is a DIFFERENT
+/// function. Standing it in reads as a relative 31.7 against the
+/// reference with every shape closing, which is the signature of a
+/// silent substitution rather than of a crash.
+///
+/// Answered HERE so the three routed dispatches — the descriptor
+/// dispatch, the zero-copy fast path, and the GPU route — refuse from
+/// one fact rather than three copies of it, and so they refuse at
+/// ADMISSION, before a command encoder exists. A refusal raised
+/// mid-encode leaves the encoder unended and Metal aborts the process
+/// instead of reporting it, so the caller never learns which layer was
+/// at fault; that is the reason [`bind_situ_glu`]'s bias assert is
+/// paired with an admission check in `gpu_route_supported` rather than
+/// left to fire alone.
+///
+/// [`MoeGateRule::ClampedGated`]: larql_compute::MoeGateRule::ClampedGated
+pub fn expert_activation_supported(gate_rule: &larql_compute::MoeGateRule) -> bool {
+    !matches!(gate_rule, larql_compute::MoeGateRule::ClampedGated { .. })
 }

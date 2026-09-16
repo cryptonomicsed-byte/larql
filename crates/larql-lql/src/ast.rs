@@ -12,6 +12,11 @@ pub enum Statement {
         components: Option<Vec<Component>>,
         layers: Option<Range>,
         extract_level: ExtractLevel,
+        /// `FORMAT VINDEX2 | VINDEX3` — which container generation to
+        /// write. `None` = no preference; the executor resolves it
+        /// through the vindex crate's single extraction-generation
+        /// policy, never a parser- or surface-local default.
+        format: Option<ExtractFormat>,
     },
     Compile {
         vindex: VindexRef,
@@ -29,6 +34,10 @@ pub enum Statement {
         relation: Option<String>,
         limit: Option<u32>,
         into_patch: Option<String>,
+        /// `DIFF … PHYSICAL` — subordinate segment-level report
+        /// (VINDEX3): hashes and linked/rewritten status instead of
+        /// the logical model-fact diff.
+        physical: bool,
     },
     Use {
         target: UseTarget,
@@ -50,6 +59,10 @@ pub enum Statement {
         /// FR1/FR2 KnnStore router selection (`ROUTE VERIFY [FALLBACK] [TOPK n]`).
         /// `None` = inherit the env default (`KnnRouteMode::from_env`).
         route: Option<InferRoute>,
+        /// `GENERATE n` — greedy autoregressive continuation through the
+        /// bound runtime (VINDEX3 backends; LQL-1). `None` = classic
+        /// single-step top-k prediction.
+        generate: Option<u32>,
     },
     Select {
         source: SelectSource,
@@ -145,10 +158,35 @@ pub enum Statement {
         limit: Option<u32>,
     },
     ShowModels,
+    /// `SHOW COMPONENTS` (VINDEX3): the system graph's components, as
+    /// the container declares them — never reconstructed from names.
+    ShowComponents,
+    /// `SHOW REPRESENTATIONS ["object"]` (VINDEX3): the physically
+    /// present representation directory, optionally filtered to entries
+    /// whose logical object matches the given substring.
+    ShowRepresentations {
+        object: Option<String>,
+    },
+    /// `SHOW PROVENANCE ["object"]` (VINDEX3): hashes and lineage per
+    /// directory entry — payload and segment digests, what an entry was
+    /// compiled from, what model the container derives from.
+    ShowProvenance {
+        object: Option<String>,
+    },
+    /// `SHOW AUTHORITY` (VINDEX3): the container's own authority
+    /// declaration and the profiles it declares by name.
+    ShowAuthority,
     Stats {
         vindex: Option<String>,
     },
     ShowCompactStatus,
+    /// `COMPACT INTO VINDEX "out"` (VINDEX3): semantics-preserving
+    /// physical reorganisation — dead files dropped, referenced
+    /// segments carried byte-identically. DIFF is its proof
+    /// instrument: SemanticDiff(input, output) must be empty.
+    CompactInto {
+        output: String,
+    },
     CompactMinor,
     CompactMajor {
         full: bool,
@@ -185,6 +223,50 @@ pub enum Statement {
         left: Box<Statement>,
         right: Box<Statement>,
     },
+}
+
+impl Statement {
+    /// The statement's verb, as a user typed it — what a capability
+    /// refusal names. Exhaustive so a new variant cannot ship nameless.
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Statement::Extract { .. } => "EXTRACT",
+            Statement::Compile { .. } => "COMPILE",
+            Statement::Diff { .. } => "DIFF",
+            Statement::Use { .. } => "USE",
+            Statement::Walk { .. } => "WALK",
+            Statement::Infer { .. } => "INFER",
+            Statement::Select { .. } => "SELECT",
+            Statement::Describe { .. } => "DESCRIBE",
+            Statement::Explain { .. } => "EXPLAIN",
+            Statement::Insert { .. } => "INSERT",
+            Statement::Delete { .. } => "DELETE",
+            Statement::Update { .. } => "UPDATE",
+            Statement::Merge { .. } => "MERGE",
+            Statement::Rebalance { .. } => "REBALANCE",
+            Statement::ShowRelations { .. } => "SHOW RELATIONS",
+            Statement::ShowLayers { .. } => "SHOW LAYERS",
+            Statement::ShowFeatures { .. } => "SHOW FEATURES",
+            Statement::ShowEntities { .. } => "SHOW ENTITIES",
+            Statement::ShowModels => "SHOW MODELS",
+            Statement::ShowComponents => "SHOW COMPONENTS",
+            Statement::ShowRepresentations { .. } => "SHOW REPRESENTATIONS",
+            Statement::ShowProvenance { .. } => "SHOW PROVENANCE",
+            Statement::ShowAuthority => "SHOW AUTHORITY",
+            Statement::Stats { .. } => "STATS",
+            Statement::ShowCompactStatus => "SHOW COMPACT STATUS",
+            Statement::CompactInto { .. } => "COMPACT INTO VINDEX",
+            Statement::CompactMinor => "COMPACT MINOR",
+            Statement::CompactMajor { .. } => "COMPACT MAJOR",
+            Statement::BeginPatch { .. } => "BEGIN PATCH",
+            Statement::SavePatch => "SAVE PATCH",
+            Statement::ApplyPatch { .. } => "APPLY PATCH",
+            Statement::ShowPatches => "SHOW PATCHES",
+            Statement::RemovePatch { .. } => "REMOVE PATCH",
+            Statement::Trace { .. } => "TRACE",
+            Statement::Pipe { .. } => "|> (pipe)",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +338,15 @@ pub enum ExtractLevel {
     Inference,
     /// + up, norms, lm_head (~10 GB f16), enables COMPILE
     All,
+}
+
+/// `EXTRACT ... FORMAT <generation>` — an explicit container-generation
+/// request. Absence means "no preference", which is NOT the same value:
+/// the default lives in one policy site in the vindex crate, not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractFormat {
+    Vindex2,
+    Vindex3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

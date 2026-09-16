@@ -1,0 +1,355 @@
+{
+  "artifact": "k3-attnres-1-execution-notes",
+  "purpose": "What K3-ATTNRES-1 LEARNED while executing, kept apart from what it PREDICTED before executing. The frozen forecast is immutable; each prediction is scored here as it is measured, and every deviation from the frozen design is recorded with its reason.",
+  "rung": "K3-ATTNRES-1",
+  "forecast": "k3-attnres-1-declare-own-address.json",
+  "forecast_commit": "a416ffc7",
+  "baseline_commit": "9cd681a1 (on main b2596f25)",
+  "reconnaissance": "k3-attnres-1-reconnaissance.json",
+
+  "transition_1_declare_own_address": {
+    "written": "2026-09-05, after the declaration, ownership, role and refusal planes were built and every gate run; scored by re-planning the rows a change of this shape could touch with a release build of the finished code, into a separate cache (`scratchpad/attnres-cache`), the canonical cache untouched",
+
+    "what_landed": [
+      "larql-models: `ResidualTopology::AttentionResidual { block_size }` beside SingleStream and HyperConnection, with the mechanism transcribed into the module doc from `modeling_kimi_linear.py`; `ModelConfig.attn_res_block_size` parsed from `text_config.attn_res_block_size` as declared or not at all; `ModelArchitecture::residual_topology` resolves all three topologies from one match and REFUSES a checkpoint declaring the period beside the Sinkhorn keys",
+      "larql-models: `ResidualTopology::unimplemented_reason` is restored — `None` for SingleStream and HyperConnection, `Some` for AttentionResidual — the seam wave 19 deleted with its last reader, brought back beside the variant that needs it exactly as that function's own documentation required",
+      "graph: `ObjectKind::AttentionResidualExit` owning `output_attn_res_{norm,proj}` as ONE object, placed only on a component that declares the period (the hyper-connection head's rule); the exit's two name fragments precede the generic `norm` fragment in the placement vocabulary, so the exit norm is no longer swept into the component's final norm; a recognised exit group on a component with no declaration is unplaced with the disagreement named",
+      "roles: four `AttnRes*` operand roles reachable ONLY through a new `classify_stack_tensor_under(name, operator, topology)`. `classify_stack_tensor_on` — the operator-only classifier the norm-placement readers use — still answers `None` for every one of their spellings, so a checkpoint that ships the operands without declaring the period acquires no topology from its tensor names",
+      "op plan: the four are required on every transformer layer under the declaration and checked at `[hidden]` and `[1, hidden]`; the same spellings on a component that declares no period are `OperandImpliesAbsentOp`, named for the operation they imply rather than reported as spellings nobody judged; the exit object gets its own closure (both operands, once each, at the pair's geometry) and NOTHING is bound from it",
+      "readers: the executor's preparation step refuses an attention-residual plan before loading one operand, and the plan report's execution-surface finding says so, both from `unimplemented_reason`; a component declaring the period and shipping no exit object is refused one step earlier, by the exit's own name",
+      "carriage: `attn_res_block_size` is an execution-semantic key with a rule reaching `represented`, whose probe reads the BUILT component's residual topology",
+      "semantics version 16 -> 17, with the identity pin gaining this transition's verdict pair"
+    ],
+
+    "predictions_scored": {
+      "measurement": "release build of the final sources; `vindex plan hf://<repo> --json` per row into `scratchpad/attnres-cache/plans`; scored against the canonical semantics-16 cache (109 rows, uniformly current). Run identity confirmed: the binary was rebuilt from the final sources after the last edit and K3 re-planned again — the two plan documents are byte-identical.",
+
+      "P1_declaration_finding_23": {
+        "result": "HELD",
+        "evidence": "`text_config.attn_res_block_size`, finding id 23: unrepresented/unknown -> representable/execution_semantic, cluster residual_wiring, declared 12, resolved 12, carriage `represented`, site `Component.execution.residual_topology (ResidualTopology::AttentionResidual.block_size)`. K3 -1 on this reader. The probe reads the built surface — K3's text surface builds where DeepSeek's does not — and the paired test proves the other half: the same key on a component whose surface refuses stays a blocker with `no built component answered the probe`."
+      },
+
+      "P2_ownership_finding_176": {
+        "result": "HELD, both halves",
+        "evidence": "`language_model.model.output_attn_res_proj`, finding id 176, leaves the blocking set: `target.attention_residual_exit` is placed and binds EXACTLY TWO tensors — `language_model.model.output_attn_res_norm` and `language_model.model.output_attn_res_proj`, 14,336 bytes each (7168 BF16, and 1x7168 BF16), from the real headers. `target.final_norm` bound `[model.norm, output_attn_res_norm]` in the canonical baseline and binds `[model.norm]` alone afterwards: the swept norm has left it. K3 -1 on this reader."
+      },
+
+      "P3_execution_surface_becomes_an_honest_refusal": {
+        "result": "HELD",
+        "evidence": "`target.execution_surface`, new finding id 178: unrepresented/unsupported_component, 'execution surface complete (attention, ffn, norm, head), and AttentionResidual { block_size: 12 } is representable but NOT executable by this build' followed by the topology's own reason — which names the traversal AND the absent oracle as what is missing, and says in terms that the declaration is represented, the exit owned and the operands addressed. K3 +1 on this reader. The refusal K3 receives is the TRAVERSAL one, not the exit's: K3 ships the pair."
+      },
+
+      "P4_net_on_the_k3_row": {
+        "result": "HELD",
+        "evidence": "text_generation blocking 33 -> 32 of 152 required (-1 declaration, -1 ownership, +1 execution surface). A reading of 31 was scored in advance as the fail-open; it did not occur."
+      },
+
+      "P5_roles_on_the_kda_layer": {
+        "result": "HELD",
+        "evidence": "`plan/tests/k3_representable.rs` KDA_LAYER_UNADDRESSED 5 -> 1, on the VERBATIM two-shard headers with K3's own declared period of 12 added to the fixture's config: the four `*_res_*` operands classify to the four site roles and `self_attn.g_proj.weight` (K3-REP-GATE-1) is the one left. The addressed KDA set is unchanged at 13. Whole-estate counts moved with it: 5,392 -> 5,384 unclassified (four operands on each of the two layers) and 22 -> 14 distinct unaddressed spellings. Plan-level counts did not move on this reader, as forecast."
+      },
+
+      "P6_the_op_plan_still_does_not_close": {
+        "result": "HELD",
+        "evidence": "the KDA layer's unaddressed set is exactly `self_attn.g_proj.weight`, so K3's op plan cannot close and its executor is never reached; the masked `single(FinalNorm)` defect is therefore still unobservable on K3 itself. It is observed on the synthetic estates instead — and note that on K3 the defect is now gone rather than merely masked, because the exit norm no longer lives in the final-norm object."
+      },
+
+      "P7_strays_and_absences_refuse_by_name": {
+        "result": "HELD, all four estates",
+        "evidence": "site operands on a single-stream component: eight `OperandImpliesAbsentOp` naming attention-residual sites, and zero `UnclassifiedOperand` among them (site_operands_without_the_declaration_are_refused_by_name). A layer missing one of the four: `MissingOperand { layer: 1, role: AttnResMlpProj }` (a_layer_missing_one_site_operand_names_the_role). A declaration with no exit pair: exactly one blocking finding, on the execution surface, naming `attention_residual_exit` (a_declaration_with_no_exit_pair_blocks_by_the_exit_s_own_name). A complete estate: closes, carries `AttentionResidual { block_size: 3 }` on the plan, 13 operands accounted per layer, and is refused at the executor's door by the topology's own reason while the single-stream control executes end to end (the_report_and_the_executor_refuse_the_topology_through_one_authority)."
+      },
+
+      "P8_controls": {
+        "result": "HELD on every count; FALSIFIED on the verdict line",
+        "counts": "0 movement on all eight controls, re-planned with the same binary: Kimi-Linear-48B-A3B-Instruct 0/64, GLM-5.3-Flash 28/91, GLM-5.3 19/76, DeepSeek-V4-Flash 31/73, DeepSeek-V4-Pro 31/73, Hy4-preview 32/76, Qwen3-0.6B 0/40, Qwen3.8-Flash-Next 36/80. Every one differs from its canonical row only by the semantics stamp.",
+        "the_other_100_rows": "not re-planned, and the argument is structural and was CHECKED rather than assumed. Every one of the 117 cached plans was searched on two planes: the config-key finding subjects (exactly one row declares `attn_res_block_size` — Kimi-K3) and the graph's object source bindings (exactly one row binds a group whose prefix contains `output_attn_res` — Kimi-K3, and the binding was inside `target.final_norm`, which is the swept norm the reconnaissance called silent, visible in the cache). The declaration gates every rule of this transition but the two placement fragments, and those two fragments can only reach a row that binds such a group. No other row can move.",
+        "FALSIFIED": "Kimi-K3's VERDICT moves RED -> AMBER, where the freeze predicted 'K3 stays RED' and 'GREEN 41 / AMBER 3 / RED 65 / BUG 0 unchanged'. The estate is GREEN 41 / AMBER 4 / RED 64 / BUG 0.",
+        "why_the_forecast_was_wrong": "the freeze predicted the finding and contradicted itself about its consequence. The sweep classifies a row AMBER when its identity is resolved and it carries at least one blocker of class `unsupported_component` — that IS the definition of 'component identified, no implementation'. K3 carried ZERO such blockers at baseline (measured: the class was absent from its findings entirely) and carries exactly one afterwards: the execution-surface refusal that P3 predicted. So P3 and P8's verdict line could not both hold, and the inconsistency was inside the frozen forecast rather than in the code. The verdict is the correct reading of what the transition achieved — K3's residual topology is now positively identified and has no implementation — and it is NOT a capability grant: the row is still inadmissible, still blocked on 32 findings, and its execution surface is refused by name. AMBER is what this rung's own reconnaissance described K3 as being.",
+        "what_should_have_been_forecast": "a prediction that adds an `unsupported_component` blocker to a row whose identity resolves must score the row's OUTCOME as well as its count, because the classifier reads the class and not the number. The same rule would have caught it before measurement."
+      },
+
+      "P9_semantics_version": {
+        "result": "HELD",
+        "evidence": "16 -> 17, and `plan/tests/identity.rs::the_semantics_version_is_pinned_to_known_verdicts` gains the pair: a synthetic attention-residual estate with every site operand AND the exit pair is blocked by exactly ONE finding — the topology's refusal, naming the traversal — and the same estate without the exit pair is blocked by exactly one finding naming `attention_residual_exit`. Both arms pinned, so the first cannot have been implemented as 'refuse anything that declares a period'."
+      },
+
+      "P10_fixture_migration_named": {
+        "result": "HELD, plus two the freeze did not name",
+        "named": "k3_representable.rs KDA_LAYER_UNADDRESSED 5 -> 1 with its comment rewritten (the tripwire is recorded as having fired TWICE now: wave 18's 'premise was wrong' firing, and this rung's intended one); identity.rs version 17; wave18_hc_carriage::k3s_residual_operands_are_not_sinkhorn_sites_under_any_stream_count UNCHANGED and still passing — it pins what these operands are NOT, and the operator-only classifier still answers `None` for them; graph placement tests gained the exit group's precedence case.",
+        "unnamed_1": "k3_representable.rs::the_plan_stage_places_bytes_and_classifies_no_operand gained a third expected blocker. The two exported shards do not carry K3's model-level tail, so a fixture that now declares the period ships no exit object and is refused by name. The test's own claim is unchanged — an unclassifiable operand still changes nothing at the plan stage — and the third subject is documented as a fixture-scope fact, not an operand refusal.",
+        "unnamed_2": "larql-vindex `config/model.rs::model_config_persists_every_forward_affecting_field` scrapes every `ModelConfig` field and demands a home in the VINDEX1/2 round-trip. `attn_res_block_size` is recorded as a KNOWN GAP beside the three `hc_*` keys and for a sharper reason: the VINDEX3 surface carries the period and the executor refuses the topology, so persisting it in the legacy model config would claim a serving path that refuses."
+      }
+    },
+
+    "falsifiers_checked": {
+      "target_norm_still_binds_two": "did not occur — `target.final_norm` binds one tensor on the re-planned K3 row, measured from the graph objects rather than from a count",
+      "k3_reads_31": "did not occur — 32",
+      "any_row_other_than_k3_moves": "did not occur — eight controls re-planned at 0 movement, and the other 100 cannot move (checked on the objects plane of all 117 cached plans)",
+      "the_four_roles_classify_without_the_declaration": "did not occur — asserted for every operator under SingleStream and HyperConnection, and through the operator-only classifier, in graph::tests::roles::attention_residual_site_operands_classify_only_under_the_declaration",
+      "the_executor_prepares_an_attention_residual_plan": "did not occur — `execute_text` on a closed attention-residual plan errors with 'cannot execute it' and the traversal reason, while the single-stream control executes",
+      "p1_reads_carried_on_a_surface_that_does_not_build": "did not occur — the_period_is_carried_only_where_the_surface_actually_builds pins both arms"
+    },
+
+    "deviations_from_the_frozen_design": [
+      {
+        "what": "the surface's residual-topology refusal is READ from the architecture rather than written at the surface; `ResolvedExecution` gains `residual_topology_refusal`, and both it and `residual_topology` are projections of ONE `Result`",
+        "why": "FORCED, and found by a test. The surface builder carried a single hardcoded sentence for the one way a declaration could resolve to nothing. A second topology creates a second way, and that sentence told a reader of a two-topology checkpoint to go and find a missing Sinkhorn iteration count — the exact 'do not call it incomplete' failure wave 16 recorded, one cause over. Re-deriving the cause at the surface would have been a second derivation of a judgment the architecture already made, so the reason travels with the absence instead. The partial-Sinkhorn wording is preserved verbatim where its own test pins it."
+      },
+      {
+        "what": "a checkpoint declaring `attn_res_block_size` BESIDE the hyper-connection keys is refused, which the freeze did not ask for",
+        "why": "the freeze settled that the period is read as declared or not at all, and said nothing about a checkpoint declaring two topologies — but the match has to answer. Choosing either silently discards what the other declares, which is the failure the topology field exists to prevent. No observed checkpoint declares both; the arm exists so that one would block by name rather than be served as half of itself."
+      },
+      {
+        "what": "the carriage rule reaches `represented`, not `lowered`",
+        "why": "the freeze's own site text named the component surface and nothing past it. `Lowered` means a backend receives the parameter; no traversal receives this period, and the executor refuses the topology at preparation, so claiming `lowered` would be carriage asserted past the boundary the same transition is putting up."
+      },
+      {
+        "what": "the exit pair is validated by closure and NOTHING is bound from it into the op plan",
+        "why": "there is no operation to bind it into. Building the argument list of an operation that does not exist is execution scaffolding ahead of the oracle, which decision 5 of the freeze put next. What closure buys is that when the operation IS built, the object it reads is the pair the checkpoint declares rather than whatever a name fragment swept together."
+      },
+      {
+        "what": "`absent_op` gains an attention-residual arm for a one-sublayer (mixer or conv-QKV) layer, mirroring the hyper-connection one, though nothing declares that combination",
+        "why": "without it, a mixer layer under the declaration would classify the four operands, require none of them, and pass silently. There is deliberately NO single-stream arm beside it: without the declaration these spellings never become roles at all, so a guard there would be dead — the shape wave 18's mutation run proved dead in the hyper-connection head's placement arm."
+      }
+    ],
+
+    "observed_while_building": [
+      "The exit pair's asymmetry is what makes it checkable, and only one half of a swap is caught. `shape_satisfies` deliberately treats a ONE-dimensional contract as satisfied by any shape holding the same values in the same order, so a `[1, hidden]` tensor stored under the norm's name does satisfy `[hidden]`; the projection's two-dimensional contract has no such latitude and refuses a `[hidden]` tensor. Had the reference stored the projection as a bare vector — the same numbers — a swapped pair would satisfy both contracts and no geometry test could exist. Recorded in the test rather than asserted around: geometry separates these two operands, and nothing in this transition proves an executor would read them in the right order. That is the oracle's job.",
+      "The canonical cache answers the control question on the OBJECTS plane, not only on the findings plane, and it had to. A group silently swept into another object leaves no finding at all — which is exactly what `output_attn_res_norm` was doing — so a search over finding subjects would have reported it absent. Searching every plan's `graph.objects[].source_bindings[].tensor_prefix` found the swept norm sitting inside `target.final_norm` on the one row that has it, which is the reconnaissance's 'silent one' visible as data.",
+      "The wave-18 tripwire passed unchanged in the direction that matters. `k3s_residual_operands_are_not_sinkhorn_sites_under_any_stream_count` asserts these four operands classify to nothing through the OPERATOR-only classifier, and it still does — which is what forced the topology-aware entry point to be a second function rather than a third parameter on the first. The test that pinned what the operands are NOT is the constraint that shaped how they became something.",
+      "The stale-profdata artifact recurred, wearing the most convincing disguise it has. `make larql-models-coverage-summary` failed at 78.65% total with five named files below their floors — and all five were files this diff touches, which is exactly what a regression you caused looks like. It cannot be one: the crate is 33,293 lines and the diff adds about forty. `cargo llvm-cov clean --workspace` and a re-run gave total 91.58%, included 95.88%, every touched file above its floor. The recorded protocol (clean before believing a coverage regression) is what separated the two readings, and the disguise is worth naming: the artifact selects for the files you most recently rebuilt, so it points at the diff every time.",
+      "Restoring a deleted seam was cheaper than it looked because the deletion had left instructions. `ResidualTopology::unimplemented_reason` was removed in wave 19 with a note in `NormPlacement::unimplemented_reason` saying a variant that refuses again must bring its readers back beside it; the wave-19 diff itself was the specification for both readers."
+    ],
+
+    "gates": "fmt --all --check clean; clippy --workspace --tests -D warnings clean; cargo test --workspace clean (0 failures); larql-models + larql-vindex suites 44 test binaries, 0 failures; cargo check --workspace --no-default-features --all-targets clean (the Linux/Windows arm); check_doc_links and check_doc_references clean; cargo doc -p larql-models -p larql-vindex adds no warning in any touched file; coverage policy PASSED on both crates — larql-models total 91.58% lines, included 95.88%, 96 of 98 files at the 90% default, 2 debt baselines; larql-vindex total 93.78% lines, 367 of 428 files at the default, 61 debt baselines. Run identity confirmed by rebuild + re-plan (byte-identical K3 plan). One pre-existing flake observed and re-run green: `opplan::exec::weights::staged_tests::the_counters_only_move_for_mapped_images` reads process-global staged-byte counters and asserts exact deltas, so a concurrent test that stages a mapped image moves them; it passes alone and on re-run, and nothing in this diff stages a weight.",
+
+    "what_this_transition_does_not_claim": "No traversal, no carrier, no arithmetic, no oracle. Nothing here shows that the mechanism these roles describe is the one the reference runs — the tests prove the declaration, the ownership and the roles agree with the headers, and that is all representation can prove. K3 is not plannable: it stays blocked on `self_attn.g_proj` (K3-REP-GATE-1), its `routed_expert_*` bank (K3-LATENTMOE-1), 14 quantization findings, 14 unclustered ones and the vision tower. No real-payload witness now or later in this rung.",
+
+    "next": "the torch oracle for `_apply_attn_res` and the block schedule, with a rejecting control for each ordering mistake the reconnaissance named, built BEFORE any Rust arithmetic; then the traversal transition freezes against the oracle's commit."
+  },
+
+  "oracle": {
+    "written": "2026-09-05, after transition 1 merged to the branch (f45129ca / 9a55bccc) and BEFORE any Rust arithmetic for the topology exists. Decision 5 of the freeze: the oracle is the next artefact, built before an implementation, so that the first implementation cannot become its own reference.",
+    "artefacts": {
+      "generator": "scripts/attn_res_oracle_export.py",
+      "fixture": "crates/larql-vindex/src/format/vindex3/opplan/exec/tests/attn_res_oracle.json",
+      "source_transcribed": "moonshotai/Kimi-K3 modeling_kimi_linear.py \u2014 `_apply_attn_res` (~L1075), `KimiDecoderLayer._forward_attn_residual` (~L973), `KimiLinearModel.forward` (~L1188) and `_apply_output_attn_res` (~L1226). Fetched and READ verbatim before a line of the oracle was written; every ordering claim below is observed in that file, not inferred from the reconnaissance's diagram.",
+      "geometry": "hidden 5, positions 3, layers 7, block_size 3 -> boundaries at layers 0, 3, 6; three snapshots; the exit mixes four candidates. Two boundary layers AFTER layer 0, which is what makes the snapshot-source controls observable at all. Deterministic: two runs are byte-identical.",
+      "self_checking": "the generator asserts every property and every control before it writes anything, and exits non-zero if its own claims are false. `--explain` prints the observed schedule."
+    },
+    "FALSIFIED_decision_5_one_candidate": {
+      "what_the_freeze_said": "decision 5 listed among the rejecting controls: 'layer 0's mlp reduction runs over one candidate'. The reconnaissance said the same in its layer-forward diagram: '[always, even at N == 0 where it is a softmax over one candidate = identity]'.",
+      "what_the_source_says": "at layer 0 the mlp-site reduction runs over TWO candidates. The order in `_forward_attn_residual` is: attention-site reduce (guarded on a non-empty set, so skipped at layer 0), THEN the boundary snapshot appends the entering state, THEN the sublayer, THEN the mlp-site reduce. Layer 0 is a boundary (`0 % B == 0`), so by the time the mlp site runs the set already holds one snapshot and the candidates are {snapshot, prefix} = 2.",
+      "and_it_never_occurs": "no site in this schedule EVER reduces over one candidate. The set starts empty (`new_zeros(tokens, 0, hidden)`), layer 0 always snapshots, and the set only grows \u2014 so the empty-set case exists at exactly one site in the whole stack, layer 0's ATTENTION site, where the reference's guard skips the reduction rather than running it over one candidate. Measured in the fixture: candidate counts are 2, 2, 2, 2/3, 3, 3, 3/4 and 4 at the exit; the minimum anywhere is 2.",
+      "why_it_matters": "a transcription written from the freeze rather than from the source would have built a one-candidate arm and then found nothing to exercise it. The reconnaissance's diagram was RIGHT about the ordering (`blocks.push(h_in)` before the attention sublayer); its parenthetical about N == 0 at the mlp site was the error, and the freeze inherited it. Read the source, not the summary of the source \u2014 even a good summary written three commits ago.",
+      "what_survives": "the property the freeze was reaching for holds and is provable: the mlp site is UNCONDITIONAL where the attention site is guarded. The control `mlp_site_skipped_at_layer_0` moves the final vector by 4.50e-01."
+    },
+    "the_six_properties_and_their_controls": {
+      "_comment": "`max |delta|` is on the stack's final vector, against the reference run. A control at 0.0 is not a weak control: it is the honest statement that the property cannot be caught by comparing outputs.",
+      "1_attention_site_reduces_over_the_OLD_snapshot_set": {
+        "proved_by": "at every boundary layer the attention site's `snapshots_reduced_over` equals `snapshots_before`, and `snapshots_after == snapshots_before + 1`. Visible in the schedule: layer 3 reduces over 1 snapshot, then the snapshot event takes it 1 -> 2.",
+        "control": "attn_site_over_new_snapshots (append before the reduce)",
+        "max_abs_delta": 0.4624587
+      },
+      "2_the_boundary_snapshot_is_the_ENTERING_prefix_state": {
+        "proved_by": "the recorded snapshot value is bitwise equal to the layer's `prefix_in`, at all three boundaries.",
+        "controls": {
+          "snapshot_is_mixed_vector": 0.9110258,
+          "snapshot_after_attention": 1.71815
+        },
+        "note": "neither control is observable at layer 0 \u2014 the attention site is skipped there, so the mixed vector IS the entering state. The fixture needs a boundary after layer 0 for this property to be testable at all, which is why block_size 3 over 7 layers and not, say, 7 over 7."
+      },
+      "3_layer_0_skips_the_attention_reduction": {
+        "proved_by": "STRUCTURE ONLY. Layer 0's witness records `ran: false, candidate_count: 0`; every other layer records `ran: true`.",
+        "control": "layer0_attention_site_runs (drop the guard)",
+        "max_abs_delta": 0.0,
+        "why_zero": "softmax over ONE candidate is exactly [1.0], so the mix is the identity and running the site at layer 0 computes precisely what skipping it computes. This property is not observable by any numerical oracle, at any geometry, ever. It is a witness-structural claim, and a Rust implementation can only be checked against it by comparing the per-site witness \u2014 not by comparing outputs."
+      },
+      "4_layer_0_still_performs_the_mlp_reduction": {
+        "proved_by": "every layer's witness records `mlp_site.ran: true`, layer 0 included \u2014 over two candidates, not one (see the falsification above).",
+        "control": "mlp_site_skipped_at_layer_0",
+        "max_abs_delta": 0.4500171,
+        "second_control": "mlp_site_guarded_on_nonempty (give the mlp site the attention site's guard) \u2014 0.0, because the guard NEVER FIRES: no mlp site in this schedule sees an empty set. Recorded so a reader knows this particular misreading is undetectable by output comparison, and why."
+      },
+      "5_mixing_uses_RAW_candidates_RMS_norm_scores_only": {
+        "proved_by": "the reference computes `probs @ v_float` while `k` (the RMS-normalised form) is read by the score and by nothing else.",
+        "controls": {
+          "mix_over_normalised_candidates": 1.296426,
+          "score_without_rmsnorm": 0.5834151
+        }
+      },
+      "6_the_exit_is_mandatory_and_uses_the_SHIPPED_output_pair": {
+        "proved_by": "the exit runs over all three snapshots plus the prefix (4 candidates) before the final norm.",
+        "controls": {
+          "exit_skipped": 2.257818,
+          "exit_uses_a_layer_pair": 0.5907323
+        },
+        "note": "the second control is what makes 'the SHIPPED pair' a claim rather than a description: an implementation that reduced with any pair at all would pass the first."
+      }
+    },
+    "observed_while_building": [
+      "**The first draft of this oracle rejected nothing, and looked like it was passing.** Its score pairs were drawn at the layer scales (up to 4.0), so `score = sum_h k_h * (norm_h * proj_h)` over an RMS-normalised `k` produced probabilities of `[1.0, 4.2e-11]` \u2014 a softmax saturated to one-hot. On a saturated distribution every candidate-set control is INVISIBLE: a candidate carrying 4e-11 of the mass can be added, removed or duplicated without moving the mix, so `attn_site_over_new_snapshots` measured exactly 0.0 while the mutation was demonstrably taking effect (its witness showed 2 candidates where the reference had none, and 3 where the reference had 2). The structure changed and the numbers did not. Fixed by drawing the score pair small (0.15) and the branch weights at the layer scales \u2014 two roles that the first draft had conflated: the score pair decides whether the softmax can DISCRIMINATE, the branch weights decide whether the candidates are worth discriminating between.",
+      "**The fixture now asserts its own ability to see.** `_verify` checks, FIRST, that no site's probability distribution is flatter than 5e-3 or more peaked than 0.98, and the measured band (0.112 .. 0.756) ships in the JSON. Without that assertion a future regeneration could re-saturate the fixture and every control would go quiet without a single test failing \u2014 the instrument would keep reporting success while measuring nothing. This is the [[feedback_verification_needs_verification]] shape applied to an oracle: if a check returns the answer you wanted, prove it could have returned the other.",
+      "Two of the ten controls are exactly 0.0 and both are mathematically necessary rather than fixture artefacts \u2014 softmax over one candidate is the identity, and the mlp site's guard never fires. They are reported as `numerically_inert` in the JSON with the reason, so the traversal transition can see up front that two of its six properties need a WITNESS comparison and cannot be checked by output parity alone."
+    ],
+    "what_the_oracle_does_not_claim": "It is a transcription, and a transcription can be faithful to the wrong file or faithful in the wrong dtype. It runs the reference's own f32-internal reduction on f32 inputs; a bf16 checkpoint would enter `_apply_attn_res` at bf16 and leave it cast back, which this fixture does not exercise. It uses a stand-in sublayer (pre-norm, linear, tanh), so nothing here checks KDA, MLA or MoE. And no Rust reads it yet: this boundary adds an instrument, not a capability.",
+    "next": "freeze the traversal transition AGAINST this oracle's commit \u2014 carrier type, the two witness-structural properties that output parity cannot reach, and the decode/batch assertions \u2014 then implement."
+  },
+
+  "transition_2b_batch_traversal": {
+    "written": "2026-09-06",
+    "scored_against": "docs/arch-conformance/forecasts/k3-attnres-1-traverse.json, frozen against the oracle commit ec7da08d. This section scores the BATCH half of transition 2 and the batch half only.",
+    "a_notes_gap_recorded_rather_than_filled": "Transition 2a (the decode traversal) landed in PR #429 with six passing tests and its gates run, but it was never given a scored section in this file. That gap is real and is named here rather than backfilled: writing 2a's numbers now, from memory of a run this session did not perform, would put unmeasured figures into the rung's evidence record. 2a's result stands in the documentation of `attn_res_2a_decode.rs`, which was written while the run was in front of it.",
+    "what_landed": [
+      "`Plane::Histories(Vec<History>)` \u2014 the batch counterpart of the decode carrier, one residual history per position, taken as decision 1 said and NOT as a `Bundle` with a growing stream count.",
+      "the three-point site seam in the batch traversal: per-position entry state captured before anything reads it, the boundary event as its own contract point between the attention reduction and the attention branch, and the per-position write on the way out.",
+      "`AttnResSitePlane` / `AttnResBoundaryPlane` carrying, per position, exactly the fields the decode observer's records carry \u2014 including `prefixes_before` and `snapshot_counts_before`, added so that A7 compares two records of the same moment rather than whatever each path happened to expose.",
+      "the batch exit: the same reduction, over the last position's whole history plus its prefix, before the final norm.",
+      "a third positional control, `AttnResWriteOffsetByOne`, alongside the frozen swap and the broadcast.",
+      "`attn_res_substrate.rs` \u2014 the oracle reader and the synthetic stack, extracted so 2a and 2b score against ONE fixture. A second copy would let the two paths agree with each other while both drifted from the oracle, which is the failure A7 exists to rule out.",
+      "the batch refusal 2a put up is RETIRED, which is what 2b was for. The PUBLIC loader refusal is untouched.",
+      "the entry condition pinned: every position enters as its OWN first prefix with an EMPTY history, and `try_rows` refuses a history plane by name \u2014 decision 1's other half, and the refusal the CLI's layer dump reaches.",
+      "the batch exit's own controls scored. The batch traversal reduces at the exit in its own code, so 2a's exit controls said nothing about it; both are now checked against an EXACT prediction rather than 'the number moved'."
+    ],
+    "predictions_scored": {
+      "P2_batch_witness": {
+        "forecast": "the same on the batch path with per-position histories, plus A7 to the bit, plus the positional mutant failing A7.",
+        "result": "HELD.",
+        "evidence": [
+          "A7 holds to the BIT, per position, over the whole per-position event stream \u2014 every site's candidate count, snapshot count, probabilities, mixed vector, prefix before and prefix after, and every boundary event's counts, value and entering prefix. Exact equality, not a tolerance.",
+          "the exit agrees at both taps: the batch post-norm state equals the final norm applied to the decode pre-norm tap, and the logits are equal, both bit-for-bit.",
+          "the frozen positional mutant (swap) fails A7, at a named position. So do the broadcast and the write-offset."
+        ],
+        "what_it_does_not_say": "A7 compares the batch traversal against the DECODE traversal. Its provenance is borrowed from 2a's foreign comparison against the oracle; batch/decode agreement is not itself an external result, and the module says so."
+      },
+      "P2a_the_foreign_arm_on_the_batch_path": {
+        "what_is_foreign_here": "the SCHEDULE and the probability BAND, both read from the oracle export. Every position is required to walk the oracle's own schedule \u2014 which layers reduce, over how many candidates, where the boundary events fall \u2014 and no distribution may leave the measured non-saturated interval.",
+        "what_is_not": "the per-site ARITHMETIC. A batch run from tokens enters on the substrate's embeddings rather than the oracle's, so its states are not the oracle's states, and re-comparing them would be measuring the branch. 2a made that comparison where it is meaningful \u2014 the reduction, replayed from the oracle's recorded entering state.",
+        "what_replaced_it": "every batch site reduction is rebuilt from the witness's OWN recorded prefix and boundary values and required to equal `attention_residual::reduce` bit-for-bit. 39 sites (13 reducing sites x 3 positions). This is what rules out a second, batched implementation of the reduction, and it also proves `snapshot_count_before` names the size of a set that actually existed rather than a plausible number."
+      },
+      "P_band": "HELD. Every distribution on the batch path lies inside the oracle's measured band [5e-3, 0.98]. Scored before any value comparison, as the freeze's hard rule requires.",
+      "P_lift": "NOT ATTEMPTED IN THIS TRANSITION. The freeze's split lists the lift under `2b_batch_and_lift`; it is being taken as a separate step, so P3 (finding 178), P4 (32 -> 31), P5 (AMBER -> RED), P6 (carriage stage), P9 (semantics 17 -> 18) and P10 (fixture migration) are all UNSCORED here and no reader has moved.",
+      "P2b_the_exit_on_the_batch_path": {
+        "why_it_needed_its_own_evidence": "the batch path emits no record for the exit \u2014 it reduces once, for the last position \u2014 so the exit's probabilities and mixed vector are not observable the way a site's are, and a value comparison against decode would have been the only check.",
+        "what_was_done_instead": "the last position's final state is rebuilt from the witness's OWN events (its last FFN site's `prefix_after` plus every boundary value it recorded), the shared reduction is run over it with the shipped exit pair, and the result must equal what the traversal produced under the final norm.",
+        "what_that_pins": [
+          "the exit read the LAST position's history and not another's \u2014 proven non-vacuous by requiring position 0's rebuilt history to predict a DIFFERENT exit, so the rebuild demonstrably can tell the positions apart",
+          "four candidates, the oracle's own count for this geometry",
+          "the exit distribution inside the oracle's band",
+          "the final norm applied AFTER the reduction, since the rebuilt vector matches only under that order"
+        ],
+        "the_two_exit_controls": "skipping the exit must leave the last position's final PREFIX under the norm \u2014 absence, not perturbation \u2014 and reducing with layer 0's pair must give exactly what that pair predicts. Both hold, so 'the SHIPPED pair' is a claim about which operand was read."
+      }
+    },
+    "the_two_findings_this_transition_produced": {
+      "1_emission_order_is_not_operation_order": {
+        "found_by": "the first draft of the schedule assertion, which built the expected sequence in OPERATION order and failed against both traversals.",
+        "what_is_true": "at a boundary layer the reference reduces the attention site over the OLD set, THEN takes the snapshot. But a site's record cannot be emitted until its branch has run, because it carries `prefix_after`. So the boundary record is emitted BEFORE the attention record whose reduction preceded it.",
+        "it_is_intrinsic_not_a_defect": "a record completed at entry could not report what the site left behind. Both traversals do it identically \u2014 A7 passes across it \u2014 so it is a property of the record type, not of either path.",
+        "what_changed_because_of_it": "the sequence assertion is stated in EMISSION order with the reason written down, and the ORDERING CLAIM was moved to its own assertion that reads it off the counts: at every boundary layer and every position, the attention site's `snapshot_count_before` equals the event's `snapshots_before` and the FFN site's equals its `snapshots_after`. Ordering by position in the stream would have asserted a convention; ordering by the counts asserts the topology. This is the mechanism the freeze already named in decision 3."
+      },
+      "2_the_two_paths_tap_the_exit_at_different_points": {
+        "found_by": "a first draft of A7 that compared the decode `StepRun::exit` against the batch `FinalState::Hidden` and reported a divergence of roughly 16x.",
+        "what_is_true": "`StepRun::exit` is the vector the exit reduction produced, BEFORE the final norm \u2014 the field's own documentation says so. A batch `FinalState::Hidden` is what the component hands on, AFTER it. The two are different quantities and neither path is wrong.",
+        "what_changed_because_of_it": "B7 applies the final norm to the decode tap before comparing, and additionally compares the LOGITS. The stronger form is a better test than the one that failed: it now proves the two paths ran the same reduction AND that the norm follows it on both, which is A5's ordering claim, and it leaves nothing between the reduction and the head exempt.",
+        "the_general_shape": "a comparison that fails is not yet evidence of a defect in the thing compared. Both of this transition's failures were defects in the comparison, and both comparisons became stronger once the difference they had misread was understood."
+      },
+      "3_a_new_plane_variant_broke_two_readers_no_crate_gate_could_see": {
+        "found_by": "a workspace build, run only because `Plane` is a public type. Every crate-scoped gate \u2014 `cargo check -p larql-vindex --all-targets`, its clippy, its full suite \u2014 was green while the workspace did not build.",
+        "what_broke": "`larql-cli`'s `summarise` matched `Plane` exhaustively, and its layer-dump sink matched `PlaneEvent` exhaustively. Adding `Plane::Histories` and the two attention-residual plane events broke both.",
+        "what_it_cost_to_miss_it": "nothing this time, because it was caught before the commit. It would have been a red CI on a branch whose own crate gates were all green \u2014 the most confusing shape a failure can take.",
+        "the_rule_it_re-proves": "a change to a type other crates can name is a WORKSPACE change, whatever crate the edit lives in, and it is gated at workspace scope.",
+        "how_it_was_resolved": "the dump sink ignores the two site events, which are witness taps rather than planes, with the reason written down; `summarise` reports a history plane's width as its prefix's, since the snapshot count is depth and not width. The plane WRITER needed no change: `try_rows` already refuses a history plane by name, which is what the freeze asked for."
+      }
+    },
+    "the_witness_is_measured_before_it_is_trusted": {
+      "B0_separation": "the minimum pairwise separation between any two positions, over every site's mixed vector and every boundary event's value, is 4.47e-2 \u2014 measured, not assumed. The required margin is 5e-3, a fixed 100x of the comparison tolerance rather than a number read off this fixture. The fixture clears the bar by about 9x.",
+      "the_closest_pair_is_1v2_and_that_is_why_the_test_is_pairwise": "the first draft compared every position against position 0 only. The closest pair is 1 and 2, which such a star comparison never examines \u2014 it would have reported a comfortable margin while the actual minimum sat elsewhere. Corrected to all unordered pairs before the number above was taken.",
+      "the_uninformed_control": "`a_single_position_batch_hides_every_positional_defect` runs the same witness at batch size one and requires all three positional controls to be INVISIBLE there \u2014 the swap and the offset have no second row to act on, and broadcasting position 0's state onto position 0 is the identity. A witness built on a one-position fixture would report this transition green while proving nothing about it. The green in that test is what a VOID experiment looks like, recorded deliberately so the green in the control test can be read as a result."
+    },
+    "the_three_positional_controls_and_what_is_claimed_for_them": {
+      "swap": "AttnResSwapPositionHistories \u2014 positions 0 and 1 exchange histories between the reduction and the update. Frozen in the traverse forecast as the required batch mutant. Signature: histories stay distinct and stay per position; they are paired with the wrong rows.",
+      "broadcast": "AttnResHistoryFromPositionZero \u2014 position 0's reduction applied to every row. Signature: COLLAPSE, every position's mixed vector equal at a reducing site.",
+      "write_offset": "AttnResWriteOffsetByOne \u2014 each branch row written into the NEXT position's history, position 0 left unwritten. Signature: DROPPED WRITE, position 0's prefix does not move across a site.",
+      "all_three_fail_A7": "at a named position. Required: the freeze says that if the positional mutant passes A7 the batch witness is void.",
+      "what_is_claimed": "that the three are DISTINGUISHABLE. The pair of signatures (collapse, dropped-write) separates all three \u2014 (false,false), (true,false), (false,true) \u2014 and the unmutated run shows neither, so no control is a relabelling of another and none can be dropped as a duplicate.",
+      "what_is_NOT_claimed": "that each control catches a defect the others cannot. Proving that needs two alternative traversals \u2014 one sharing state, one mis-indexing it \u2014 which this rung does not build. The module says so rather than implying the stronger claim."
+    },
+    "what_has_not_lifted": [
+      "the PUBLIC loader still refuses the attention-residual topology by name. Nothing an ordinary caller reaches has changed.",
+      "a resume point carrying a history plane is refused by name, and the refusal is asserted to come before any observation. Carrying a typed state through a traversal and reconstructing it from an external representation are different capabilities; nothing reads a serialised prefix-plus-snapshots state back, and inventing a format for one nothing consumes would be addressability without execution in a new place.",
+      "no reader has moved. K3 still reads 32 and AMBER. Semantics is unchanged."
+    ],
+    "deviations_from_the_frozen_design": [
+      "the freeze's split names `2b_batch_and_lift` as one step. The lift is being taken separately, after this, so that the batch witness can be shown to fail before any reader moves \u2014 which is the freeze's own sequencing rule (`only then does the refusal lift`) taken literally.",
+      "a THIRD positional control was added beyond the frozen swap. The freeze required one; the swap alone is an involution on two rows and leaves the pairing correct at every other position, so it does not reach a whole-plane misalignment. Adding controls is a strengthening, and each is scored on its own signature.",
+      "`AttnResSitePlane` and `AttnResBoundaryPlane` carry more per-position fields than the first implementation exposed. Without `prefixes_before` and `snapshot_counts_before` the batch record could not be compared to the decode record field for field, and A7 would have been a comparison of whatever each path happened to expose."
+    ],
+    "gates": "cargo fmt --check clean; cargo clippy -p larql-vindex --all-targets -D warnings clean; cargo clippy -p larql-cli --bins --tests -D warnings clean in both its default and --no-default-features forms; cargo check --workspace --all-targets clean \u2014 run because `Plane` is a public type and a crate-scoped gate cannot see its readers; the full larql-vindex suite green; larql-vindex coverage measured against its own policy after a clean of stale profdata.",
+    "what_this_transition_does_not_claim": "nothing about K3 itself. K3's op plan still does not close, so no assertion here has ever run on the real row; the substrate is synthetic by construction and its branch is an ordinary attention and FFN, not KDA or MLA. This shows the topology traverses correctly around an ordinary branch, per position, in batch \u2014 and that is all it shows.",
+    "next": "the lift, as its own step: `unimplemented_reason` returns None for AttentionResidual, its two readers follow, the carriage rule moves from `represented` to `lowered`, and P3 to P10 are scored from a re-plan \u2014 the verdict FORECAST FROM THE CLASSIFIER rather than from blocker arithmetic, which is the lesson transition 1's P8 was falsified by."
+  },
+
+  "transition_2c_the_lift": {
+    "written": "2026-09-06",
+    "scored_against": "docs/arch-conformance/forecasts/k3-attnres-1-traverse.json \u2014 the LIFT half of that freeze's `2b_batch_and_lift` split, taken as its own transition so the batch witness could be shown to fail before any reader moved.",
+    "what_landed": [
+      "`ResidualTopology::unimplemented_reason` DELETED, not left returning `None` for everything \u2014 the state it sat in between wave 19 and this rung. A dead authority that still answers invites a reader to consult it and conclude something.",
+      "both readers deleted with it, together: the plan report's traversal refusal and the executor's preparation refusal. The single-authority rule is what made that a two-line change rather than a search.",
+      "the `#[cfg(test)]` witness seam `load_for_attention_residual_witness` REMOVED. Its own documentation asked for exactly that at the lift. Both witnesses now prepare through the public `PreparedOperands::load`, so they score the path an ordinary caller reaches and there is no second loader that could drift from the first.",
+      "`attn_res_block_size` carriage `Represented` -> `Lowered`, its site naming the history carrier that reads the period.",
+      "semantics 17 -> 18, with the changelog entry stating what lifted and what did not.",
+      "three fixture migrations, each inverted rather than deleted: the models-side topology test, `k3_attnres_addressing`'s one-authority test (now: the report admits AND the executor runs), and the identity pin's version-17 arm (now version 18's verdict pair)."
+    ],
+    "measurement": {
+      "protocol": "release `vindex` built per arm from that arm's sources; `vindex plan hf://<repo> --json` for K3 and the eight controls into two separate caches; scored by importing `scripts/arch_sweep.py` and calling its own `classify`, so the verdict is the classifier's and not arithmetic of mine.",
+      "THE_CANONICAL_CACHE_COULD_NOT_BE_THE_BASELINE": "It sits at semantics 16, and this transition is 17 -> 18. Scoring 18 against 16 would have folded transition 1's movement into the lift's score \u2014 the 'uniform cache before baseline' failure, in its cross-transition form. So BOTH arms were measured here: baseline = merged main (3e6e76f4, semantics 17), candidate = this branch (semantics 18), same nine rows, same protocol, same machine.",
+      "the_baseline_arm_reproduces_transition_1_exactly": "All eight controls came back at the numbers transition 1 recorded \u2014 Kimi-Linear 0/64, GLM-5.3-Flash 28/91, GLM-5.3 19/76, DeepSeek-V4-Flash 31/73, DeepSeek-V4-Pro 31/73, Hy4-preview 32/76, Qwen3-0.6B 0/40, Qwen3.8-Flash-Next 36/80 \u2014 and K3 at 32/152. An independently rebuilt baseline landing on the previously recorded numbers is what makes the candidate arm's single difference readable as this transition's effect."
+    },
+    "predictions_scored": {
+      "P3_execution_surface_finding_178": {
+        "result": "HELD",
+        "evidence": "`target.execution_surface`, finding id 178, unrepresented/unsupported_component in the baseline arm and ABSENT in the candidate. K3 -1 on this reader. The `execution_surface` cluster goes 1 -> 0."
+      },
+      "P4_net_on_the_k3_row": {
+        "result": "HELD",
+        "evidence": "text_generation blocking 32/152 -> 31/152. A reading of 30 was scored in advance as the fail-open; it did not occur. The blocker-subject delta is exactly one REMOVAL and zero additions, so the lift retired the traversal refusal and granted no other capability."
+      },
+      "P5_the_k3_VERDICT": {
+        "result": "HELD",
+        "evidence": "AMBER -> RED, read from `arch_sweep.classify` rather than from blocker arithmetic \u2014 the discipline transition 1's falsified P8 taught. `unsupported_component` findings 1 -> 0, which empties the class and makes the classifier's AMBER arm unreachable for the row. The baseline reason was 'component identified, no implementation'; the candidate's is '31 blocking on text closure'.",
+        "why_this_is_success_not_regression": "AMBER meant 'identified component, no implementation'. Once the component IS implemented that reason must disappear, even though K3 stays blocked on 31 other things. A row that stayed AMBER here would have meant an unaccounted `unsupported_component` was still standing."
+      },
+      "P6_carriage_stage_moves_and_the_count_does_not": {
+        "result": "HELD on both halves",
+        "evidence": "`text_config.attn_res_block_size` carriage `represented` -> `lowered`; class execution_semantic, category representable, blocking False in BOTH arms. The count did not move on this reader, which is what says the stage name is not doing work it should not."
+      },
+      "P7_op_plan_unchanged": {
+        "result": "HELD",
+        "evidence": "K3's text capability is inadmissible in both arms (31 of 152 still blocking), so its executor is never reached and every witness in this rung remains on the synthetic substrate. No finding in the ResidualWiring / LayerRole / ObjectBinding clusters moved."
+      },
+      "P8_controls": {
+        "result": "HELD, and this time on the verdict line too",
+        "evidence": "Zero movement on all eight controls across blockers, unsupported_component count and verdict. Kimi-Linear-48B-A3B-Instruct GREEN 0/64, GLM-5.3-Flash RED 28/91, GLM-5.3 RED 19/76, DeepSeek-V4-Flash AMBER 31/73, DeepSeek-V4-Pro AMBER 31/73, Hy4-preview RED 32/76, Qwen3-0.6B GREEN 0/40, Qwen3.8-Flash-Next RED 36/80.",
+        "the_other_108_rows": "not re-planned, and the argument was CHECKED rather than assumed, the way transition 1 checked it. All 117 cached plans were scanned on two planes: exactly ONE mentions `attn_res_block_size` and exactly ONE binds an `attn_res` operand group \u2014 Kimi-K3 both times. Every rule this transition touches is gated on `ResidualTopology::AttentionResidual`, which only that declaration produces, so no other row can move."
+      },
+      "P9_semantics_version": {
+        "result": "HELD",
+        "evidence": "17 -> 18, stamped on every plan in the candidate arm. The identity pin gained this transition's verdict PAIR: a synthetic attention-residual estate with every operand and the exit pair is now ADMISSIBLE, and the same estate without the exit pair stays blocked by the exit's own finding \u2014 asserted, plus an explicit assertion that the traversal refusal's wording is gone from that report. The second arm is what keeps the first from having been implemented as 'stop refusing attention residuals'."
+      },
+      "P10_fixture_migration_named": {
+        "result": "HELD",
+        "evidence": "Exactly the three the freeze named, and no others: `plan/tests/identity.rs` (version 18, first arm flipped blocked -> admissible), `opplan/tests/k3_attnres_addressing.rs::the_report_and_the_executor_refuse_the_topology_through_one_authority` rewritten as `the_report_admits_the_topology_and_the_executor_runs_it` keeping its single-stream control, and `larql-models`'s topology test. Two tests failed on the first full run and they were these; nothing else in 4363 changed meaning."
+      }
+    },
+    "falsifiers_checked": {
+      "k3_reads_30_or_fewer": "did not occur. 31, the forecast value. 30 was the pre-declared fail-open.",
+      "k3_stays_AMBER": "did not occur. RED, from the classifier. Had it stayed AMBER the instruction was to stop and find the extra `unsupported_component` rather than rationalise it \u2014 there was none to find.",
+      "any_row_other_than_k3_moves": "did not occur, on nine measured rows and on a structural scan of all 117.",
+      "capability_granted_past_the_boundary": "did not occur. The exit-missing refusal and the hyper-connection headless refusal both survive in the report by name; only the traversal refusal was retired. The blocker delta on K3 is one removal, zero additions."
+    },
+    "what_this_transition_does_not_claim": "that K3 runs. Its text closure still names 31 blockers across representation_quantization (14), unclustered (14), ffn_activation, moe_routing and modality_vision. The row moved at the plan level only, and the traversal it thereby stops refusing has never executed on it \u2014 every witness in this rung is on a synthetic substrate whose branch is an ordinary attention and FFN, not KDA or MLA.",
+    "gates": "fmt; clippy on larql-vindex, larql-models and larql-cli; `cargo check --workspace --all-targets`; larql-models 799 + 100, larql-vindex 4363, larql-server 591, all green.",
+    "rung_status": "K3-ATTNRES-1 is CLOSED with this transition. What remains of K3 is not this rung: `self_attn.g_proj` is K3-REP-GATE-1 and the routed-expert bank is K3-LATENTMOE-1."
+  }
+}

@@ -1,0 +1,674 @@
+//! Identity + detection + per-layer resolution.
+
+use serde_json::json;
+
+use crate::inventory::resolved::{read_identity, resolve};
+
+/// A Glimmer-shaped config: unknown `model_type`, explicit `layer_types`.
+fn glimmer_shaped() -> serde_json::Value {
+    let layer_types: Vec<&str> = (0..52)
+        .map(|i| {
+            if i % 4 == 3 {
+                "full_attention"
+            } else {
+                "sliding_attention"
+            }
+        })
+        .collect();
+    json!({
+        "architectures": ["MuseGlimmerForConditionalGeneration"],
+        "dtype": "bfloat16",
+        "model_type": "muse_glimmer",
+        "transformers_version": "5.15.0.dev0",
+        "text_config": {
+            "model_type": "muse_glimmer_text",
+            "hidden_size": 6656,
+            "num_hidden_layers": 52,
+            "intermediate_size": 19968,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 2,
+            "head_dim": 128,
+            "sliding_window": 2048,
+            "vocab_size": 202048,
+            "rms_norm_eps": 1e-5,
+            "qk_scale_factor": 3.87,
+            "layer_types": layer_types
+        },
+        "vision_config": { "hidden_size": 1536 }
+    })
+}
+
+#[test]
+fn identity_reads_nested_model_type_and_components() {
+    let identity = read_identity(&glimmer_shaped());
+    assert_eq!(identity.model_type, "muse_glimmer_text");
+    assert_eq!(
+        identity.architectures,
+        vec!["MuseGlimmerForConditionalGeneration"]
+    );
+    assert_eq!(identity.dtype.as_deref(), Some("bfloat16"));
+    assert_eq!(
+        identity.transformers_version.as_deref(),
+        Some("5.15.0.dev0")
+    );
+    assert_eq!(identity.components, vec!["text_config", "vision_config"]);
+}
+
+#[test]
+fn identity_handles_flat_configs() {
+    let config = json!({
+        "model_type": "muse_glimmer_assistant",
+        "torch_dtype": "bfloat16"
+    });
+    let identity = read_identity(&config);
+    assert_eq!(identity.model_type, "muse_glimmer_assistant");
+    assert_eq!(identity.dtype.as_deref(), Some("bfloat16"));
+    assert!(identity.components.is_empty());
+    assert!(identity.architectures.is_empty());
+}
+
+/// The central finding for an unsupported family: detection succeeds via the
+/// generic fallback, and the report says so. (Glimmer graduated to a
+/// registered family, so the unknown here is genuinely unjudged.)
+#[test]
+fn unknown_model_type_reports_generic_fallback() {
+    let mut config = glimmer_shaped();
+    config["model_type"] = serde_json::json!("unjudged_future_model");
+    config["text_config"]["model_type"] = serde_json::json!("unjudged_future_model_text");
+    let identity = read_identity(&config);
+    let (detection, _) = resolve(&config, &identity);
+    assert!(detection.generic_fallback);
+    assert_eq!(detection.family, "generic");
+    assert!(detection.attention_kind.is_none());
+}
+
+/// The registered Glimmer target resolves with its judged semantics —
+/// the gate spec and parameter-free QK norm — while the assistant stays
+/// generic (unjudged).
+#[test]
+fn glimmer_target_resolves_with_judged_semantics() {
+    let config = glimmer_shaped();
+    let identity = read_identity(&config);
+    let (detection, topology) = resolve(&config, &identity);
+    assert!(!detection.generic_fallback);
+    assert_eq!(detection.family, "muse_glimmer");
+    let execution = topology.execution.unwrap();
+    assert!(execution.attention_output_gate.is_some());
+    assert!(execution.parameter_free_qk_norm.q);
+    assert!(execution.parameter_free_qk_norm.k);
+    // Scales stay separate: declared query factor, canonical score scale.
+    // `Some` is load-bearing — an absent declaration must not arrive here
+    // as a plausible 1.0.
+    let query_scale = execution.query_scale.expect("declared qk_scale_factor");
+    assert!((query_scale - 3.87).abs() < 1e-12);
+    assert!(execution.score_scale < 1.0);
+}
+
+/// A Granite-shaped config, whose head scale is declared as a DIVISOR.
+fn granite_shaped() -> serde_json::Value {
+    json!({
+        "architectures": ["GraniteForCausalLM"],
+        "model_type": "granite",
+        "hidden_size": 64,
+        "num_hidden_layers": 2,
+        "intermediate_size": 256,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 8,
+        "head_dim": 64,
+        "attention_multiplier": 0.015625,
+        "logits_scaling": 10.0,
+        "residual_multiplier": 0.22
+    })
+}
+
+/// The resolved graph carries the head scale as a **multiplier**, already
+/// inverted from Granite's divisor spelling.
+///
+/// `logit_scale()` is unit-tested on its own, but this pins the
+/// *composition* — config in, resolved execution out — because that is the
+/// step a container encode performs, and it is where the defect was
+/// actually observed: a container whose `system_graph.json` carried
+/// `output_multiplier: 10.0` instead of `0.1`, a factor of 100 in the head.
+///
+/// It survived because a positive scalar cannot reorder logits, so argmax,
+/// generated ids and every oracle built on them agreed exactly while the
+/// distribution was wrong. Only a probability-space measurement could see
+/// it, and KL against a same-scaled reference read exactly `0.000000` —
+/// not a good result, an unmeasurable one.
+///
+/// This assertion is what makes the pre-fix 6 GiB container disposable: the
+/// defect is reproduced here in milliseconds rather than kept on disk.
+#[test]
+fn granite_resolves_its_divisor_head_scale_to_a_multiplier() {
+    let config = granite_shaped();
+    let identity = read_identity(&config);
+    let (_, topology) = resolve(&config, &identity);
+    let execution = topology.execution.expect("judged execution");
+
+    let multiplier = execution
+        .output_multiplier
+        .expect("declared logits_scaling must resolve, not vanish");
+    assert!(
+        (multiplier - 0.1).abs() < 1e-12,
+        "logits_scaling 10.0 is a divisor: the graph must carry 1/10, got {multiplier}"
+    );
+    // The specific regression: the divisor passed through unchanged.
+    assert!(
+        (multiplier - 10.0).abs() > 1e-9,
+        "graph carries the raw divisor — this is the pre-fix defect"
+    );
+}
+
+/// An explicit `output_multiplier` is already a multiplier and wins over
+/// the divisor spelling, so a model declaring both is not inverted twice.
+#[test]
+fn an_explicit_multiplier_is_not_inverted_again() {
+    let mut config = granite_shaped();
+    config["output_multiplier"] = json!(0.25);
+    let identity = read_identity(&config);
+    let (_, topology) = resolve(&config, &identity);
+    let multiplier = topology
+        .execution
+        .expect("judged execution")
+        .output_multiplier
+        .expect("explicit multiplier");
+    assert!((multiplier - 0.25).abs() < 1e-12, "got {multiplier}");
+}
+
+/// A known family does not trip the fallback flag.
+#[test]
+fn known_family_is_not_a_fallback() {
+    let config = json!({
+        "model_type": "llama",
+        "hidden_size": 4096,
+        "num_hidden_layers": 2,
+        "intermediate_size": 11008,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 32,
+        "vocab_size": 32000
+    });
+    let identity = read_identity(&config);
+    let (detection, _) = resolve(&config, &identity);
+    assert!(!detection.generic_fallback);
+    assert_eq!(detection.attention_kind.as_deref(), Some("standard"));
+}
+
+/// `layer_types` drives the per-layer table even under the generic
+/// fallback — the interleave is served from the config, and the table must
+/// show exactly what the serving path would run.
+#[test]
+fn layer_table_reflects_declared_layer_types() {
+    let config = glimmer_shaped();
+    let identity = read_identity(&config);
+    let (_, topology) = resolve(&config, &identity);
+
+    assert_eq!(topology.num_layers, 52);
+    assert_eq!(topology.layers.len(), 52);
+    assert_eq!(topology.attention.sliding_layers, 39);
+    assert_eq!(topology.attention.full_layers, 13);
+
+    // Pattern is [sliding, sliding, sliding, full] from layer 0.
+    assert_eq!(topology.layers[0].attention, "sliding");
+    assert_eq!(topology.layers[0].window, Some(2048));
+    assert_eq!(topology.layers[3].attention, "full");
+    assert_eq!(topology.layers[3].window, None);
+    assert_eq!(topology.layers[51].attention, "full");
+
+    // GQA topology flows through.
+    assert_eq!(topology.num_q_heads, 32);
+    assert_eq!(topology.num_kv_heads, 2);
+    assert_eq!(topology.head_dim, 128);
+    assert_eq!(topology.vocab_size, Some(202048));
+
+    // Every layer's own declared spelling is carried alongside the
+    // boolean split, verbatim.
+    assert_eq!(
+        topology.layers[0].declared_span.as_deref(),
+        Some("sliding_attention")
+    );
+    assert_eq!(
+        topology.layers[3].declared_span.as_deref(),
+        Some("full_attention")
+    );
+}
+
+/// A hybrid interleave outside the sliding/full vocabulary (a
+/// linear-attention layer): `attention` still resolves to the boolean
+/// split `is_sliding_window_layer` answers (`false`, since it is not
+/// literally `"sliding_attention"`), but `declared_span` preserves the
+/// checkpoint's own spelling verbatim — the fact `attention` alone
+/// cannot express and that a consumer needs in order to tell a genuine
+/// full-attention layer from a defaulted one.
+#[test]
+fn a_hybrid_linear_attention_layer_keeps_its_own_declared_spelling() {
+    let config = serde_json::json!({
+        "model_type": "qwen3_5_text",
+        "hidden_size": 64,
+        "num_hidden_layers": 4,
+        "intermediate_size": 256,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 2,
+        "layer_types": ["linear_attention", "linear_attention", "linear_attention", "full_attention"]
+    });
+    let identity = read_identity(&config);
+    let (_, topology) = resolve(&config, &identity);
+
+    assert_eq!(topology.layers[0].attention, "full");
+    assert_eq!(
+        topology.layers[0].declared_span.as_deref(),
+        Some("linear_attention")
+    );
+    assert_eq!(topology.layers[3].attention, "full");
+    assert_eq!(
+        topology.layers[3].declared_span.as_deref(),
+        Some("full_attention")
+    );
+}
+
+/// A config with no `layer_types` and no override resolves all-full — that
+/// is what the serving path would do, and the table must not pretend
+/// otherwise.
+#[test]
+fn no_layer_types_resolves_all_full() {
+    let config = json!({
+        "model_type": "some_unknown_arch",
+        "hidden_size": 64,
+        "num_hidden_layers": 4,
+        "intermediate_size": 256,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 8
+    });
+    let identity = read_identity(&config);
+    let (_, topology) = resolve(&config, &identity);
+    assert_eq!(topology.attention.full_layers, 4);
+    assert_eq!(topology.attention.sliding_layers, 0);
+}
+
+/// Validation findings are carried as data, not raised as errors.
+#[test]
+fn validation_errors_are_data() {
+    // Zero layers is invalid, but the inventory must still describe it.
+    let config = json!({ "model_type": "some_unknown_arch" });
+    let identity = read_identity(&config);
+    let (detection, topology) = resolve(&config, &identity);
+    assert!(!detection.validation_errors.is_empty());
+    assert_eq!(topology.num_layers, 0);
+    assert!(topology.layers.is_empty());
+}
+
+/// A gpt-oss-shaped config: routed MoE with router bias, attention sinks and
+/// projection biases, clamped GLU, YaRN — every A-9 semantic in one family.
+fn gpt_oss_shaped() -> serde_json::Value {
+    json!({
+        "architectures": ["GptOssForCausalLM"],
+        "model_type": "gpt_oss",
+        "hidden_size": 2880,
+        "intermediate_size": 2880,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 8,
+        "head_dim": 64,
+        "attention_bias": true,
+        "num_local_experts": 32,
+        "experts_per_token": 4,
+        "vocab_size": 201088,
+        "rope_theta": 150000.0,
+        "swiglu_limit": 7.0,
+        "layer_types": ["sliding_attention", "full_attention"],
+        "sliding_window": 128
+    })
+}
+
+/// A routed family resolves its MoE facts and names each layer's expert
+/// bank in the architecture's own namespace — before any tensor is seen.
+#[test]
+fn routed_family_resolves_moe_and_names_its_banks_arch_relative() {
+    let config = gpt_oss_shaped();
+    let identity = read_identity(&config);
+    let (detection, topology) = resolve(&config, &identity);
+    assert!(!detection.generic_fallback);
+    let execution = topology.execution.expect("judged execution");
+    let moe = execution.moe.expect("gpt-oss is routed");
+    assert_eq!(moe.experts, 32);
+    assert_eq!(moe.top_k, 4);
+    assert!(moe.router_bias);
+    assert!(execution.attention_sinks.is_some());
+    assert_eq!(execution.attention_bias, Some(true));
+    assert!(matches!(
+        execution.gate_policy,
+        crate::config::ExpertGatePolicy::ClampedGlu { .. }
+    ));
+    let banks: Vec<Option<String>> = topology
+        .layers
+        .iter()
+        .map(|l| l.expert_bank.clone())
+        .collect();
+    assert_eq!(
+        banks,
+        vec![
+            Some("layers.0.mlp.experts".to_string()),
+            Some("layers.1.mlp.experts".to_string())
+        ]
+    );
+}
+
+/// A dense family names no bank on any layer.
+#[test]
+fn dense_family_names_no_expert_bank() {
+    let config = glimmer_shaped();
+    let identity = read_identity(&config);
+    let (_, topology) = resolve(&config, &identity);
+    assert!(topology.layers.iter().all(|l| l.expert_bank.is_none()));
+    assert!(topology.execution.unwrap().moe.is_none());
+}
+
+fn tensor(name: &str) -> crate::inventory::TensorFact {
+    crate::inventory::TensorFact {
+        name: name.to_string(),
+        dtype: "U8".to_string(),
+        shape: vec![32, 5760, 90, 16],
+        bytes: 0,
+        file: "model.safetensors".to_string(),
+    }
+}
+
+/// Binding resolves the arch-relative prefix to the spelling the checkpoint
+/// uses, at a segment boundary; a bank no tensor spells resolves to `None`.
+#[test]
+fn expert_banks_bind_to_the_source_spelling_or_to_nothing() {
+    use crate::inventory::resolved::bind_expert_banks;
+    let config = gpt_oss_shaped();
+    let identity = read_identity(&config);
+    let (_, mut topology) = resolve(&config, &identity);
+    let tensors = vec![
+        // Layer 0 is spelled by the checkpoint under `model.`.
+        tensor("model.layers.0.mlp.experts.gate_up_proj_blocks"),
+        // A near-miss for layer 1: `xlayers.1…` is not a segment boundary.
+        tensor("model.xlayers.1.mlp.experts.gate_up_proj_blocks"),
+    ];
+    bind_expert_banks(&mut topology, &tensors);
+    assert_eq!(
+        topology.layers[0].expert_bank.as_deref(),
+        Some("model.layers.0.mlp.experts")
+    );
+    assert_eq!(topology.layers[1].expert_bank, None);
+}
+
+/// A Kimi-Linear-shaped config: `ExpertFormat::PerExpert` (no packed key at
+/// all), sigmoid router, one shared expert.
+fn kimi_shaped() -> serde_json::Value {
+    json!({
+        "architectures": ["KimiLinearForCausalLM"],
+        "model_type": "kimi_linear",
+        "hidden_size": 2304,
+        "intermediate_size": 9216,
+        "num_hidden_layers": 3,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 32,
+        "head_dim": 128,
+        "vocab_size": 163840,
+        "num_experts": 256,
+        "num_experts_per_token": 8,
+        "num_shared_experts": 1,
+        "moe_intermediate_size": 1024,
+        "moe_router_activation_func": "sigmoid",
+        "first_k_dense_replace": 1,
+    })
+}
+
+/// A `PerExpert`-format family (no single packed tensor exists) names each
+/// routed layer's bank at the common ancestor of its per-expert operands —
+/// derived from the architecture's own key methods, not a packed key.
+#[test]
+fn per_expert_family_names_its_bank_from_evidence_not_a_packed_key() {
+    let config = kimi_shaped();
+    let identity = read_identity(&config);
+    let (detection, topology) = resolve(&config, &identity);
+    assert!(!detection.generic_fallback);
+    assert_eq!(detection.family, "kimi_linear");
+    let moe = topology
+        .execution
+        .expect("judged execution")
+        .moe
+        .expect("kimi is routed");
+    assert_eq!(moe.expert_format, crate::config::ExpertFormat::PerExpert);
+    assert_eq!(
+        topology.layers[0].expert_bank.as_deref(),
+        Some("layers.0.block_sparse_moe.experts")
+    );
+    assert_eq!(
+        topology.layers[2].expert_bank.as_deref(),
+        Some("layers.2.block_sparse_moe.experts")
+    );
+}
+
+/// The per-expert derivation requires the format AND at least two experts
+/// — a single-expert declaration cannot prove the divergence is the
+/// expert-index segment, so it must not guess.
+#[test]
+fn a_single_declared_expert_names_no_bank() {
+    let mut config = kimi_shaped();
+    config["num_experts"] = json!(1);
+    let identity = read_identity(&config);
+    let (_, topology) = resolve(&config, &identity);
+    assert!(topology.layers.iter().all(|l| l.expert_bank.is_none()));
+}
+
+/// The Kimi-shaped bank binds to the checkpoint's own `model.`-prefixed
+/// per-expert tensors exactly as the packed case does — same mechanism,
+/// evidenced on real per-expert tensor names this time.
+#[test]
+fn a_per_expert_bank_binds_to_the_source_spelling() {
+    use crate::inventory::resolved::bind_expert_banks;
+    let config = kimi_shaped();
+    let identity = read_identity(&config);
+    let (_, mut topology) = resolve(&config, &identity);
+    let tensors = vec![
+        tensor("model.layers.1.block_sparse_moe.experts.0.w1.weight"),
+        tensor("model.layers.1.block_sparse_moe.experts.255.w3.weight"),
+        // Layer 2's bank is unspelled by any tensor — stays `None`.
+    ];
+    bind_expert_banks(&mut topology, &tensors);
+    assert_eq!(
+        topology.layers[1].expert_bank.as_deref(),
+        Some("model.layers.1.block_sparse_moe.experts")
+    );
+    assert_eq!(topology.layers[2].expert_bank, None);
+}
+
+/// A bank spelled with no source prefix at all binds at offset zero.
+#[test]
+fn expert_bank_at_the_start_of_the_name_binds_too() {
+    use crate::inventory::resolved::bind_expert_banks;
+    let config = gpt_oss_shaped();
+    let identity = read_identity(&config);
+    let (_, mut topology) = resolve(&config, &identity);
+    let tensors = vec![tensor("layers.1.mlp.experts.down_proj_blocks")];
+    bind_expert_banks(&mut topology, &tensors);
+    assert_eq!(topology.layers[0].expert_bank, None);
+    assert_eq!(
+        topology.layers[1].expert_bank.as_deref(),
+        Some("layers.1.mlp.experts")
+    );
+}
+
+// ── J5: settling a declared index-base ambiguity from the tensor
+//    estate (the OuteAI Mamba2Attn hybrid) ──
+
+/// The OuteAI-shaped hybrid config: mamba_ssm dialect geometry, the
+/// conv-QKV attention block, and an `attention_layers_idx` that fits
+/// both bases over 8 layers.
+fn hybrid_shaped() -> serde_json::Value {
+    json!({
+        "model_type": "mamba2",
+        "num_hidden_layers": 8,
+        "hidden_size": 1024,
+        "intermediate_size": 2048,
+        "vocab_size": 32768,
+        "state_size": 128,
+        "mamba2_num_heads": 32,
+        "mamba2_head_dim": 64,
+        "expand": 2,
+        "mamba2_conv_kernel": 4,
+        "chunk_size": 256,
+        "time_step_limit": [0.0, "Infinity"],
+        "use_mamba2_bias": false,
+        "use_conv_bias": true,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 16,
+        "attention_head_dim": 128,
+        "attention_conv_kernel": 4,
+        "rope_emb_dim": 64,
+        "rope_theta": 10000.0,
+        "use_attention_qkv_bias": false,
+        "use_attention_out_bias": false,
+        "attention_layers_idx": [2, 5],
+        "layer_norm_epsilon": 1e-5,
+        "residual_in_fp32": true,
+        "tie_embedding_weights": true
+    })
+}
+
+/// One `mixer.in_proj.weight` fact per layer: attention rows (6144) on
+/// the layers in `attention`, mamba rows (4384) elsewhere.
+fn hybrid_in_proj_facts(layers: usize, attention: &[usize]) -> Vec<crate::inventory::TensorFact> {
+    (0..layers)
+        .map(|layer| {
+            let rows = if attention.contains(&layer) {
+                6144
+            } else {
+                4384
+            };
+            crate::inventory::TensorFact {
+                name: format!("backbone.layers.{layer}.mixer.in_proj.weight"),
+                dtype: "BF16".to_string(),
+                shape: vec![rows, 1024],
+                bytes: (rows * 1024 * 2) as u64,
+                file: "model.safetensors".to_string(),
+            }
+        })
+        .collect()
+}
+
+/// **The tensor estate settles the base the config leaves ambiguous.**
+/// `[2,5]` over 8 layers fits both readings; the observed `in_proj` rows
+/// fit exactly one. The settlement is recorded — sources name the tensor
+/// evidence — and the complement identifies as Mamba2, because the same
+/// shape check verified every complement layer against the DECLARED
+/// mixer geometry.
+#[test]
+fn tensor_evidence_settles_an_ambiguous_attention_set() {
+    use crate::config::{LayerIndexBase, LayerKind, RecurrenceFamily};
+    use crate::inventory::resolved::resolve_with_tensor_evidence;
+
+    let config = hybrid_shaped();
+    let identity = read_identity(&config);
+    // Config alone: unresolved, and the uniform fallback must NOT answer.
+    let (_, blind) = resolve(&config, &identity);
+    assert!(
+        blind.layers.iter().all(|l| l.declared_kind.is_none()),
+        "a declared-but-unresolved interleave must not take the uniform answer"
+    );
+    assert!(blind.layers.iter().all(|l| {
+        l.declared_span.as_deref() == Some(crate::config::LAYER_TYPE_UNRESOLVED_INTERLEAVE)
+    }));
+
+    // Zero-based evidence: attention mixers at layers 2 and 5.
+    let facts = hybrid_in_proj_facts(8, &[2, 5]);
+    let (_, topology) = resolve_with_tensor_evidence(&config, &identity, &facts);
+    for (layer, policy) in topology.layers.iter().enumerate() {
+        let expected = if [2usize, 5].contains(&layer) {
+            LayerKind::Full
+        } else {
+            LayerKind::Recurrent(RecurrenceFamily::Mamba2)
+        };
+        assert_eq!(
+            policy.declared_kind.as_ref(),
+            Some(&expected),
+            "layer {layer}"
+        );
+    }
+    // The attention layers rotate as declared: partial rotary, 64 of 128.
+    let rotating = &topology.layers[2].position;
+    assert_eq!(
+        *rotating,
+        crate::config::PositionPolicy::PartialRope {
+            theta: 10000.0,
+            rotary_fraction: 0.5,
+            basis: crate::config::RotaryFrequencyBasis::RotaryWidth,
+        }
+    );
+    assert_eq!(
+        topology.layers[0].position,
+        crate::config::PositionPolicy::None
+    );
+
+    // One-based evidence (attention mixers at 1 and 4) settles the OTHER
+    // reading from the SAME declaration.
+    let facts = hybrid_in_proj_facts(8, &[1, 4]);
+    let (_, topology) = resolve_with_tensor_evidence(&config, &identity, &facts);
+    assert_eq!(topology.layers[1].declared_kind, Some(LayerKind::Full));
+    assert_eq!(
+        topology.layers[2].declared_kind,
+        Some(LayerKind::Recurrent(RecurrenceFamily::Mamba2))
+    );
+    let _ = LayerIndexBase::Zero;
+}
+
+/// Evidence that fits NEITHER base — or layers whose shapes are missing —
+/// leaves the declaration unresolved: the pass settles ambiguity, it
+/// never invents an answer.
+#[test]
+fn inconsistent_tensor_evidence_settles_nothing() {
+    use crate::inventory::resolved::resolve_with_tensor_evidence;
+
+    let config = hybrid_shaped();
+    let identity = read_identity(&config);
+    // Attention-shaped rows at layer 3 — a set neither base predicts.
+    let facts = hybrid_in_proj_facts(8, &[3, 6]);
+    let (_, topology) = resolve_with_tensor_evidence(&config, &identity, &facts);
+    assert!(topology.layers.iter().all(|l| l.declared_kind.is_none()));
+
+    // No tensors at all: same refusal.
+    let (_, topology) = resolve_with_tensor_evidence(&config, &identity, &[]);
+    assert!(topology.layers.iter().all(|l| l.declared_kind.is_none()));
+}
+
+#[test]
+fn a_nested_text_declaration_does_not_erase_the_container_one() {
+    // Kimi K3: the container says `kimi_k3`, the text component says
+    // `kimi_linear`. The reader prefers the text declaration, so before
+    // this the container's was simply gone by the time anything could
+    // judge it — and `kimi_linear` resolves, so detection would have
+    // dispatched a 93-layer model to the 48B implementation without a
+    // word. Both declarations must reach the gate.
+    let identity = read_identity(&serde_json::json!({
+        "model_type": "kimi_k3",
+        "text_config": { "model_type": "kimi_linear", "num_hidden_layers": 93 },
+    }));
+    assert_eq!(identity.model_type, "kimi_linear");
+    assert_eq!(identity.container_model_type.as_deref(), Some("kimi_k3"));
+}
+
+#[test]
+fn a_flat_config_declares_once_and_reports_no_second_fact() {
+    // The control: without it, every flat checkpoint would report its own
+    // `model_type` as a container declaration and the conflict gate would
+    // be comparing a fact with itself.
+    let identity = read_identity(&serde_json::json!({ "model_type": "llama" }));
+    assert_eq!(identity.model_type, "llama");
+    assert_eq!(identity.container_model_type, None);
+}
+
+#[test]
+fn a_text_config_that_declares_nothing_leaves_the_container_authoritative() {
+    // A nested block exists but states no identity: the container's
+    // declaration is the only one, so there is nothing to reconcile and
+    // reporting a second fact would invent a disagreement.
+    let identity = read_identity(&serde_json::json!({
+        "model_type": "gemma3",
+        "text_config": { "num_hidden_layers": 26 },
+    }));
+    assert_eq!(identity.model_type, "gemma3");
+    assert_eq!(identity.container_model_type, None);
+}

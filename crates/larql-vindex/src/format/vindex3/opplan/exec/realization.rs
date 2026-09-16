@@ -1,0 +1,1004 @@
+//! **The realization vocabulary** — what a prepared plan resolves, considers,
+//! selects and pins for each planned operand, and how it refuses.
+//!
+//! Rung 3b of the representation/execution contract
+//! (`docs/represent/forecasts/rung3-planned-realizations.json`). Before this
+//! module the seam between plan and backend was three stored-dtype booleans
+//! and a silent fallback: any dtype the policy did not recognise widened to
+//! f32 with nothing recorded. Now a backend is handed the planned operation
+//! and the REPRESENTATION FACTS the registry declares for the stored dtype,
+//! and answers with one [`RealizationId`] chosen from a candidate set it
+//! derived from those declarations — or refuses, naming every candidate it
+//! considered and why. Nothing here reads a label to decide anything.
+//!
+//! The forms a realization can take are the executor's own, made explicit:
+//! a direct kernel over the stored bytes (declared by the codec), the
+//! universal decode to f32 followed by an f32 projection, a decode followed
+//! by a lossy re-quantisation (the executor's own compact forms), the packed
+//! bank sliced per expert from stored rows, a decoded table gathered per
+//! token, or a device backend's own resident form.
+
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use super::backend::{MatrixClass, WeightFormat};
+use super::cpu::physical::PhysicalProjectionPlan;
+use super::lowering::{LoweringIdentity, LoweringRegistry};
+use crate::error::VindexError;
+use crate::format::vindex3::opplan::planned::{Operation, PlannedOperand};
+use crate::format::vindex3::opplan::OperandRef;
+use crate::format::vindex3::represent::codec::{
+    Acceleration, AccelerationBackend, CodecCapabilities, CodecError, CodecRegistry,
+    ExtentCertificate, RepresentationCodec, RepresentationExtent, RequiredAccess, ResidencyProfile,
+};
+use crate::format::vindex3::represent::nvfp4_pack::CodecIdentity;
+
+/// What the registry declares for one stored dtype — resolved once per
+/// operand at preparation, and the only thing a backend is told about the
+/// representation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepresentationFacts {
+    /// The label the facts were resolved from: the container's stored
+    /// label, or the codec the plan declares when the stored label is a
+    /// carrier dialect that names none (see [`Self::resolve_declared`]).
+    pub label: String,
+    /// The codec's declarations, when the label names a registered codec.
+    /// `None` is a fact too: an unregistered label has no decode and no
+    /// capabilities, and nothing binds it.
+    pub registered: Option<RegisteredFacts>,
+    /// Whether an overlay edit stands on the operand. An edit is an
+    /// f32-space fact with no stored bytes, so no direct realization can
+    /// honour it; only decode can.
+    pub overlaid: bool,
+}
+
+/// A registered codec's declarations, copied out so a backend never holds
+/// the codec itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegisteredFacts {
+    pub identity: CodecIdentity,
+    pub capabilities: CodecCapabilities,
+    pub accelerations: Vec<Acceleration>,
+    pub decode_residency: ResidencyProfile,
+    /// Every extent the codec declares, base first. One for a terminal
+    /// representation; several for a progressive one, and then a pin has
+    /// something to choose between.
+    pub extents: Vec<ExtentCertificate>,
+}
+
+impl RepresentationFacts {
+    /// Resolve `label` through the built-in registry.
+    #[cfg(test)]
+    pub fn resolve(label: &str) -> Self {
+        Self::resolve_in(CodecRegistry::builtin(), label)
+    }
+
+    /// Resolve `label` through `registry` — a scratch registry in a test is
+    /// how a codec that is not shipped gets facts.
+    pub fn resolve_in(registry: &CodecRegistry, label: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            registered: registry.by_label(label).map(RegisteredFacts::of),
+            overlaid: false,
+        }
+    }
+
+    /// The same facts, with an overlay edit standing on the operand.
+    pub fn overlaid(mut self) -> Self {
+        self.overlaid = true;
+        self
+    }
+
+    /// Whether the STORED bytes can be addressed as `required` asks.
+    pub fn provides(&self, required: RequiredAccess) -> bool {
+        self.registered
+            .as_ref()
+            .is_some_and(|r| r.capabilities.access.provides(required))
+    }
+
+    /// The direct CPU realizations the codec declares — none while an
+    /// overlay edit stands on the operand, because there are no stored
+    /// bytes for a kernel to run over.
+    pub fn direct_cpu_plans(&self) -> Vec<PhysicalProjectionPlan> {
+        if self.overlaid {
+            return Vec::new();
+        }
+        self.registered
+            .as_ref()
+            .map(|r| {
+                r.accelerations
+                    .iter()
+                    .filter(|a| a.backend == AccelerationBackend::Cpu)
+                    .map(|a| a.plan)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The residency the codec declares for a direct realization over
+    /// `plan`, if it declares one.
+    pub fn direct_residency(&self, plan: PhysicalProjectionPlan) -> Option<ResidencyProfile> {
+        self.registered.as_ref().and_then(|r| {
+            r.accelerations
+                .iter()
+                .find(|a| a.plan == plan)
+                .map(|a| a.residency)
+        })
+    }
+
+    /// The facts for an operand whose container label is `stored` and
+    /// whose plan declares `declared`. The STORED representation is
+    /// authoritative: the container's label wins whenever it names a
+    /// codec, because the bytes say what they are. The plan's declaration
+    /// is a legacy default, consulted only for a carrier dialect whose
+    /// label names no codec — a packed MXFP4 bank stored as two `U8`
+    /// streams. These are not two competing truths; the declaration fills
+    /// in where the container says nothing a registry knows. One rule, so
+    /// the selector and the bank loader cannot disagree about what a
+    /// bank is.
+    pub fn resolve_declared(
+        registry: &CodecRegistry,
+        stored: &str,
+        declared: Option<&str>,
+    ) -> Self {
+        let label = match declared {
+            Some(declared) if registry.by_label(stored).is_none() => declared,
+            _ => stored,
+        };
+        Self::resolve_in(registry, label)
+    }
+
+    /// Admit slicing the stored bytes per expert — the packed-bank
+    /// realization's requirement, judged BEFORE any byte is read. A
+    /// registered codec must declare row access. An unregistered label
+    /// has no capabilities to judge; registration itself is refused
+    /// first, by the same rule as every other operation, so this answers
+    /// only for a codec.
+    pub fn admit_row_slicing(&self) -> Result<(), CodecError> {
+        match &self.registered {
+            Some(r) => r
+                .capabilities
+                .require(RequiredAccess::RowRandom, &self.label),
+            None => Ok(()),
+        }
+    }
+}
+
+impl RegisteredFacts {
+    pub fn of(codec: &dyn RepresentationCodec) -> Self {
+        Self {
+            identity: codec.identity(),
+            capabilities: codec.capabilities(),
+            accelerations: codec.accelerations(),
+            decode_residency: codec.decode_residency(),
+            extents: codec.extents(),
+        }
+    }
+}
+
+/// Where a realization runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizationBackend {
+    /// This crate's CPU executor, including its reference transcription.
+    Cpu,
+    /// A device backend's own resident form.
+    Device,
+}
+
+/// How a planned operand is executed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealizationForm {
+    /// A kernel the codec declared, over the stored bytes.
+    Direct(PhysicalProjectionPlan),
+    /// The universal decode to f32, then an f32 projection.
+    Decode(PhysicalProjectionPlan),
+    /// Decode, then the executor's own lossy re-quantisation.
+    Requantise(PhysicalProjectionPlan),
+    /// The packed bank, sliced per expert from STORED rows and converted.
+    SliceStored { convert: WeightFormat },
+    /// The whole table decoded, one row gathered per token.
+    DecodedGather,
+    /// The STORED bytes bound as a mapping of the container's segment —
+    /// bound once, never copied or converted — and executed in place in
+    /// their stored form. A bank's realization: one physical object
+    /// serving every logical expert access, paged in as touched.
+    MappedStored {
+        format: WeightFormat,
+        /// How the selected experts' pages are brought in for a token.
+        access: MappedAccess,
+    },
+    /// A device backend's resident form, declared per class by that
+    /// backend for its own target.
+    DeviceResident(WeightFormat),
+}
+
+/// How a mapped bank's selected experts are brought into memory for one
+/// token — an ACCESS realization of the same lossless bytes. The bytes,
+/// the mapping and the touch are identical across variants; only the
+/// request shape differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
+pub enum MappedAccess {
+    /// The projection loop faults each page as it reaches it: one page
+    /// per fault, serially, in row order.
+    #[default]
+    Demand,
+    /// `madvise(MADV_WILLNEED)` over the selected experts' regions before
+    /// the loop; the kernel decides how much it reads ahead.
+    Advise,
+    /// The selected experts' pages are touched concurrently, ordered by
+    /// address, before the loop; every fault is taken in parallel and
+    /// the loop then finds resident pages.
+    Touch,
+}
+
+impl MappedAccess {
+    pub const ALL: [MappedAccess; 3] = [
+        MappedAccess::Demand,
+        MappedAccess::Advise,
+        MappedAccess::Touch,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            MappedAccess::Demand => "demand",
+            MappedAccess::Advise => "advise",
+            MappedAccess::Touch => "touch",
+        }
+    }
+
+    /// The policy named by a flag, or the names it does accept.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        Self::ALL
+            .into_iter()
+            .find(|a| a.name() == name)
+            .ok_or_else(|| {
+                format!(
+                    "unknown expert access `{name}`; one of {}",
+                    Self::ALL.map(|a| a.name()).join(", ")
+                )
+            })
+    }
+}
+
+/// One realization, named so a plan can pin it and a trace can say it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RealizationId {
+    pub backend: RealizationBackend,
+    pub form: RealizationForm,
+}
+
+impl RealizationId {
+    pub const fn cpu(form: RealizationForm) -> Self {
+        Self {
+            backend: RealizationBackend::Cpu,
+            form,
+        }
+    }
+
+    /// The representation the loader makes resident for this realization.
+    pub fn format(self) -> WeightFormat {
+        match self.form {
+            RealizationForm::Direct(plan)
+            | RealizationForm::Decode(plan)
+            | RealizationForm::Requantise(plan) => plan.format(),
+            RealizationForm::SliceStored { convert } => convert,
+            RealizationForm::DecodedGather => WeightFormat::F32,
+            RealizationForm::MappedStored { format, .. } => format,
+            RealizationForm::DeviceResident(format) => format,
+        }
+    }
+
+    /// Whether this realization keeps its codec's DEPENDENCIES resident
+    /// while serving — the fact a dependency pin's lifetime is set from.
+    ///
+    /// A realization over the STORED bytes reads what those bytes need on
+    /// every token: a direct kernel over FP8 codes multiplies by the scale
+    /// grid, a mapped bank executes in place. A realization that decodes
+    /// — to f32, to a re-quantised image, to a device's own form — is
+    /// finished with the dependency once the image exists.
+    pub fn retains_dependencies(self) -> bool {
+        match self.form {
+            RealizationForm::Direct(_) | RealizationForm::MappedStored { .. } => true,
+            RealizationForm::Decode(_)
+            | RealizationForm::Requantise(_)
+            | RealizationForm::SliceStored { .. }
+            | RealizationForm::DecodedGather
+            | RealizationForm::DeviceResident(_) => false,
+        }
+    }
+
+    /// The access realization of a mapped form; every other form is
+    /// brought in whole at binding and has none.
+    pub fn access(self) -> MappedAccess {
+        match self.form {
+            RealizationForm::MappedStored { access, .. } => access,
+            _ => MappedAccess::Demand,
+        }
+    }
+
+    /// The same realization under another access policy — only a mapped
+    /// form changes; every other form is returned as it is.
+    pub fn with_access(self, access: MappedAccess) -> Self {
+        match self.form {
+            RealizationForm::MappedStored { format, .. } => Self {
+                backend: self.backend,
+                form: RealizationForm::MappedStored { format, access },
+            },
+            _ => self,
+        }
+    }
+
+    /// The CPU projection plan this realization runs, when it is one.
+    pub fn cpu_plan(self) -> Option<PhysicalProjectionPlan> {
+        match self.form {
+            RealizationForm::Direct(plan)
+            | RealizationForm::Decode(plan)
+            | RealizationForm::Requantise(plan) => Some(plan),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> String {
+        let form = match self.form {
+            RealizationForm::Direct(plan) => format!("direct/{plan:?}"),
+            RealizationForm::Decode(plan) => format!("decode-f32+{plan:?}"),
+            RealizationForm::Requantise(plan) => format!("requantise/{plan:?}"),
+            RealizationForm::SliceStored { convert } => format!("slice-stored→{convert:?}"),
+            RealizationForm::DecodedGather => "decode-f32+gather".to_string(),
+            RealizationForm::MappedStored { format, access } => {
+                format!("mapped-stored/{format:?}/{}", access.name())
+            }
+            RealizationForm::DeviceResident(format) => format!("device-resident/{format:?}"),
+        };
+        match self.backend {
+            RealizationBackend::Cpu => format!("cpu:{form}"),
+            RealizationBackend::Device => format!("device:{form}"),
+        }
+    }
+}
+
+/// What the executor makes resident for `format`, priced from its own
+/// block geometry — see [`super::accounting::resident_profile_with`],
+/// which is the one definition; this is it under the executor's constants.
+pub fn resident_profile(format: WeightFormat) -> ResidencyProfile {
+    super::accounting::resident_profile_with(format, super::accounting::BlockGeometry::executor())
+}
+
+/// Why a backend chose what it chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionReason {
+    /// The codec declares a direct realization and the backend takes it.
+    DirectDeclared,
+    /// The codec declares no direct realization; decode is the only path.
+    NoDirectRealization,
+    /// A direct realization exists and the process arm prefers decoding.
+    ArmPrefersDecode,
+    /// The size policy over a float source chose this resident form.
+    SizePolicy,
+    /// A packed bank is sliced per expert from stored rows at load.
+    BankSlicedAtLoad,
+    /// A per-expert bank's matrices bound as a mapping of the stored
+    /// bytes, in their stored form — one physical binding per bank.
+    BankMappedAsStored,
+    /// Re-selected from the operand's candidates so the plan's physical
+    /// working set fits the residency budget: a cheaper-resident
+    /// realization the backend had considered and not preferred.
+    BudgetPolicy,
+    /// The device backend's class table names its resident form.
+    DeviceClassTable,
+    /// An embedding table is decoded whole and gathered per token.
+    EmbeddingGather,
+    /// The reference backend takes the literal transcription, always.
+    ReferenceOracle,
+    /// An overlay edit stands on the operand; only decode can honour it.
+    OverlaidEdit,
+}
+
+impl SelectionReason {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::DirectDeclared => "direct realization declared by the codec",
+            Self::NoDirectRealization => "no direct realization registered",
+            Self::ArmPrefersDecode => "the process arm prefers decoding",
+            Self::SizePolicy => "size policy over a float source",
+            Self::BankSlicedAtLoad => "packed bank sliced per expert at load",
+            Self::BankMappedAsStored => "per-expert bank mapped as stored, bound once",
+            Self::BudgetPolicy => "re-selected to fit the residency budget",
+            Self::DeviceClassTable => "device class table",
+            Self::EmbeddingGather => "table decoded whole, gathered per token",
+            Self::ReferenceOracle => "reference oracle",
+            Self::OverlaidEdit => "an overlay edit stands on the operand; only decode honours it",
+        }
+    }
+}
+
+/// The realization a backend pinned for one operand, with everything a
+/// trace needs to say about the choice.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selection {
+    pub realization: RealizationId,
+    /// What the selected realization makes resident, declared — never
+    /// measured — so the census can be checked against it.
+    pub residency: ResidencyProfile,
+    pub reason: SelectionReason,
+    /// Every realization the backend considered, the selected one
+    /// included. Derived from declarations, never from a label.
+    pub candidates: Vec<RealizationId>,
+}
+
+/// Why no realization could be selected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalKind {
+    /// The stored label names no registered codec, so nothing can decode
+    /// it and no capability is declared for it.
+    UnregisteredRepresentation,
+    /// Every candidate needs access the stored representation does not
+    /// provide.
+    AccessRefused,
+    /// The plan executes an operation no realization on this backend can
+    /// bind — a planned operand with nowhere to go.
+    MissingRealization,
+}
+
+impl RefusalKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::UnregisteredRepresentation => "unregistered representation",
+            Self::AccessRefused => "access refused",
+            Self::MissingRealization => "missing realization",
+        }
+    }
+}
+
+/// A refusal that names the operand, what it asked for, what the
+/// representation is, and every candidate with the reason it was rejected.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectionRefusal {
+    pub operand: OperandRef,
+    pub operation: Operation,
+    pub representation: String,
+    pub requested: RequiredAccess,
+    pub kind: RefusalKind,
+    pub considered: Vec<(RealizationId, String)>,
+}
+
+impl fmt::Display for SelectionRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "operand `{}` ({}, requires {} access) stored as `{}`: {}",
+            self.operand.tensor,
+            self.operation.name(),
+            self.requested.name(),
+            self.representation,
+            self.kind.name()
+        )?;
+        if self.considered.is_empty() {
+            write!(f, "; no realization to consider")?;
+        }
+        for (candidate, why) in &self.considered {
+            write!(f, "; {} — {why}", candidate.name())?;
+        }
+        Ok(())
+    }
+}
+
+/// Every refusal a plan raised, together, so a caller sees the whole
+/// problem and not its first symptom.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectionRefusals(pub Vec<SelectionRefusal>);
+
+impl fmt::Display for SelectionRefusals {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} planned operand(s) have no admissible realization",
+            self.0.len()
+        )?;
+        for refusal in &self.0 {
+            write!(f, "\n  {refusal}")?;
+        }
+        Ok(())
+    }
+}
+
+/// One planned operand's pinned realization — the record the prepared
+/// plan keeps and the trace reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RealizationRecord {
+    pub planned: PlannedOperand,
+    pub representation: String,
+    /// The identity the stored label resolved to at preparation; `None`
+    /// for a label no codec claims.
+    ///
+    /// The CODEC plane's authority: what the bytes are.
+    pub codec_provider: Option<CodecIdentity>,
+    /// The lowering provider that qualified this realization — the
+    /// LOWERING plane's authority: what implementation decided the pin
+    /// (LOWERING-PLUGIN-1, L4).
+    ///
+    /// Not optional, and not derived from the other: a record exists
+    /// because some provider selected it, and since L1 every provider
+    /// states an identity. The two authorities move independently — a
+    /// codec revision can change under an unchanged lowering and the
+    /// reverse — so the pin names both and invalidation says which.
+    ///
+    /// The provider's SEMANTIC identity, never its configuration: two
+    /// device providers built with different format tables share
+    /// `device-matmul/v1`, and what their configurations changed is
+    /// pinned in [`Selection::realization`] instead.
+    pub lowering_provider: LoweringIdentity,
+    pub selection: Selection,
+    /// How much of the stored representation this pin reads.
+    ///
+    /// On the PIN, not on the plan: a depth is a fact about one codec, and
+    /// the plan is representation-independent. The artifact still holds
+    /// every extent whatever this says — what the pin decides is how much
+    /// of it execution opens.
+    pub extent: ExtentPin,
+    /// The other represented objects this pin will resolve, and what its
+    /// realization does with each. Empty for every operand whose codec
+    /// depends on nothing.
+    /// Bytes physically read to verify this operand's attestations
+    /// during selection. Zero for an operand that attests nothing, and
+    /// zero for one whose claim was refused from metadata — admission
+    /// costs no payload read, which is a property worth being able to
+    /// observe rather than assert.
+    pub verified_bytes: u64,
+    pub dependencies: Vec<DependencyPin>,
+}
+
+impl RealizationRecord {
+    /// Pin another realization on this record, and let every dependency's
+    /// lifetime follow it: the lifetime is the realization's, so a re-pin
+    /// that left it standing would price the old realization's retention
+    /// against the new one's bytes.
+    pub fn repin(&mut self, realization: RealizationId) {
+        self.selection.realization = realization;
+        let lifetime = if realization.retains_dependencies() {
+            DependencyLifetime::Retained
+        } else {
+            DependencyLifetime::PreparationOnly
+        };
+        for dependency in &mut self.dependencies {
+            dependency.lifetime = lifetime;
+        }
+    }
+}
+
+/// The authorities a prepared image was pinned under, both planes, as a
+/// value that survives being written down.
+///
+/// Two independent authorities. The CODEC plane says what the stored
+/// bytes are, keyed by the representation label each pin read; the
+/// LOWERING plane says which implementation qualified the realization.
+/// Neither implies the other, so an image carries both and a refusal
+/// names which one moved.
+///
+/// Separated from [`PreparedOperands`](super::prepared::PreparedOperands)
+/// so that the SAME code judges a live image and one that was serialized
+/// and reloaded: an image is judged through the authorities it yields,
+/// and a reloaded record of those authorities yields the same two
+/// verdicts. Nothing here holds a codec or a provider — only what was
+/// decided — because an image that held its providers would keep a
+/// removed one alive and could never be invalidated by its
+/// disappearance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PinnedAuthorities {
+    /// Every representation the image pinned, once each, with the
+    /// identity its label resolved to at preparation. `None` is an
+    /// overlay edit's f32-space fact, never a label a loader judged for
+    /// itself.
+    pub codecs: Vec<(String, Option<CodecIdentity>)>,
+    /// Every lowering provider that qualified a pin, once each, in pin
+    /// order. One today — a prepared image is lowered by one provider —
+    /// and a list because nothing in the contract says it must stay one.
+    pub lowerings: Vec<LoweringIdentity>,
+}
+
+impl PinnedAuthorities {
+    /// Refuse an image whose codec authority has moved: a representation
+    /// that resolves to a different identity than it did at preparation,
+    /// or to none at all.
+    pub fn ensure_codecs_in(&self, registry: &CodecRegistry) -> Result<(), VindexError> {
+        let describe = |identity: &Option<CodecIdentity>| {
+            identity
+                .as_ref()
+                .map(|i| format!("{} r{}", i.family, i.revision))
+                .unwrap_or_else(|| "no registered codec".to_string())
+        };
+        for (label, prepared) in &self.codecs {
+            let now = registry.by_label(label).map(|c| c.identity());
+            if now != *prepared {
+                return Err(VindexError::Parse(format!(
+                    "representation `{label}` was prepared against {} and the registry now \
+                     offers {}; re-prepare rather than execute a pin whose provider changed",
+                    describe(prepared),
+                    describe(&now)
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Refuse an image whose lowering authority has moved: the provider
+    /// that qualified a pin is not in `registry` under exactly the
+    /// identity the pin recorded.
+    ///
+    /// A family present at another revision is a different provider and
+    /// is refused; so is a registry full of perfectly good alternatives.
+    /// Nothing re-selects and nothing substitutes — the refusal names the
+    /// identity the pin recorded and every identity the registry holds,
+    /// and re-preparation is the only way forward.
+    pub fn ensure_lowerings_in(&self, registry: &LoweringRegistry) -> Result<(), VindexError> {
+        lowerings_stand_in(&self.lowerings, registry)
+    }
+}
+
+/// The lowering plane's judgment itself — see
+/// [`PinnedAuthorities::ensure_lowerings_in`], which is this over what was
+/// written down.
+///
+/// A free function so that a prepared image can ask the question without
+/// first building its codec half, and so that the live image and the
+/// reloaded record cannot drift into two judgments of one contract.
+pub(super) fn lowerings_stand_in(
+    pinned: &[LoweringIdentity],
+    registry: &LoweringRegistry,
+) -> Result<(), VindexError> {
+    for identity in pinned {
+        if registry.provider(identity).is_err() {
+            let held = registry.identities();
+            let held = if held.is_empty() {
+                "none".to_string()
+            } else {
+                held.iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            return Err(VindexError::Parse(format!(
+                "lowering provider `{identity}` qualified this preparation and the registry \
+                 now holds {held}; re-prepare rather than execute a pin whose provider is \
+                 gone — no other provider stands in for it"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// What a realization does with a dependency once it has read it.
+///
+/// The distinction the accounting turns on, and it belongs to the
+/// REALIZATION rather than to the operand: being an auxiliary says
+/// nothing about lifetime. A canonical decode reads a codebook, produces
+/// an f32 image and is finished with it; a direct kernel over codes would
+/// have to keep it and touch it for every token. Same object, same
+/// container, different cost — decided by what was pinned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyLifetime {
+    /// Read to prepare the owner, then dropped. Nothing of it is resident
+    /// afterwards and no token touches it.
+    PreparationOnly,
+    /// Kept resident and read while serving. NOTHING SELECTS THIS TODAY:
+    /// no realization in this build declares it, and the accounting can
+    /// price it so that a realization which did would be paid for
+    /// honestly rather than silently.
+    Retained,
+}
+
+/// One dependency a pinned realization will resolve, and what it will
+/// cost once resolved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DependencyPin {
+    /// The name the owner's codec declared.
+    pub name: String,
+    pub object: String,
+    pub tensor: String,
+    /// The stored label the container records for the target — its
+    /// representation, which is its own business and not its owner's.
+    pub label: String,
+    /// The identity that label resolved to when this pin was made.
+    /// `None` for a label no codec claims, which admission refuses.
+    pub provider: Option<CodecIdentity>,
+    /// The container's recorded length for it — `None` when the container
+    /// holds no such tensor, which admission refuses before this matters.
+    pub stored_bytes: Option<u64>,
+    /// Logical elements it holds, for pricing a retained image.
+    pub elements: usize,
+    pub lifetime: DependencyLifetime,
+}
+
+impl DependencyPin {
+    /// The address, as the ledger keys deduplication on.
+    pub fn address(&self) -> (String, String) {
+        (self.object.clone(), self.tensor.clone())
+    }
+}
+
+/// One extent a pin could take: what it certifies, and what it reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtentOption {
+    pub certificate: ExtentCertificate,
+    /// Bytes of the stored operand this extent reads, where the codec
+    /// prices a shape. `None` for an instance-sized encoding, whose
+    /// authority is the container's recorded length.
+    pub stored_bytes: Option<u64>,
+}
+
+/// The extent a pin selected, and every extent it could have taken.
+///
+/// Three things the vocabulary keeps apart: what the ARTIFACT contains
+/// (every option here, because the container holds every plane), what
+/// EXECUTION requires (a fidelity floor, which the budget carries), and
+/// what the PIN chose (`selected`). A shallower selection does not shrink
+/// the artifact and must never be accounted as if it had.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtentPin {
+    pub selected: RepresentationExtent,
+    pub options: Vec<ExtentOption>,
+}
+
+impl ExtentPin {
+    /// A pin on the whole representation: the deepest extent declared.
+    /// The default, so nothing changes for a plan that asks for nothing.
+    pub fn whole(options: Vec<ExtentOption>) -> Self {
+        let selected = options
+            .iter()
+            .map(|o| o.certificate.extent)
+            .max()
+            .unwrap_or(RepresentationExtent::BASE);
+        Self { selected, options }
+    }
+
+    /// A pin for a representation whose extents are not known — an
+    /// unregistered label, whose bytes nothing can price either.
+    pub fn unknown() -> Self {
+        Self {
+            selected: RepresentationExtent::BASE,
+            options: Vec::new(),
+        }
+    }
+
+    /// The option the pin selected, when the extents are known.
+    pub fn selected_option(&self) -> Option<&ExtentOption> {
+        self.options
+            .iter()
+            .find(|o| o.certificate.extent == self.selected)
+    }
+
+    /// Bytes the selected extent reads, when the codec prices them.
+    pub fn touch_bytes(&self) -> Option<u64> {
+        self.selected_option().and_then(|o| o.stored_bytes)
+    }
+
+    /// Whether this pin has anything to choose between.
+    pub fn is_progressive(&self) -> bool {
+        self.options.len() > 1
+    }
+}
+
+// ── The candidate sets, derived from declarations ─────────────────────
+
+/// The candidates the CPU executor has for a projection-class operand:
+/// every direct realization the codec declares, the universal decode
+/// (`decode_plan` is the f32 projection that follows it), and — for a
+/// source whose stored bytes the executor knows how to re-quantise, which
+/// it declares by naming a direct bf16 kernel — the executor's own compact
+/// forms. Nothing is added by label.
+pub fn cpu_projection_candidates(
+    facts: &RepresentationFacts,
+    decode_plan: PhysicalProjectionPlan,
+    requantise: &[PhysicalProjectionPlan],
+) -> Vec<RealizationId> {
+    let mut out: Vec<RealizationId> = facts
+        .direct_cpu_plans()
+        .into_iter()
+        .map(|p| RealizationId::cpu(RealizationForm::Direct(p)))
+        .collect();
+    if facts.registered.is_some() {
+        out.push(RealizationId::cpu(RealizationForm::Decode(decode_plan)));
+        if facts
+            .direct_cpu_plans()
+            .contains(&PhysicalProjectionPlan::FusedBf16)
+        {
+            out.extend(
+                requantise
+                    .iter()
+                    .map(|p| RealizationId::cpu(RealizationForm::Requantise(*p))),
+            );
+        }
+    }
+    out
+}
+
+/// The selection every backend makes for the operations that are not a
+/// projection, given the candidate it offers for them; `None` for the
+/// shared expert, which no backend binds through the prepared plan.
+pub fn common_selection(
+    operand: &PlannedOperand,
+    facts: &RepresentationFacts,
+    bank_convert: WeightFormat,
+) -> Option<Result<Selection, Box<SelectionRefusal>>> {
+    let refuse = |kind, considered: Vec<(RealizationId, String)>| {
+        Box::new(SelectionRefusal {
+            operand: operand.operand.clone(),
+            operation: operand.operation,
+            representation: facts.label.clone(),
+            requested: operand.access,
+            kind,
+            considered,
+        })
+    };
+    match operand.operation {
+        Operation::Embed => {
+            let id = RealizationId::cpu(RealizationForm::DecodedGather);
+            Some(if facts.registered.is_some() {
+                Ok(Selection {
+                    realization: id,
+                    residency: ResidencyProfile::DECODED_F32,
+                    reason: SelectionReason::EmbeddingGather,
+                    candidates: vec![id],
+                })
+            } else {
+                Err(refuse(RefusalKind::UnregisteredRepresentation, vec![]))
+            })
+        }
+        Operation::ExpertBankSlice => {
+            let id = RealizationId::cpu(RealizationForm::SliceStored {
+                convert: bank_convert,
+            });
+            if facts.registered.is_none() {
+                return Some(Err(refuse(RefusalKind::UnregisteredRepresentation, vec![])));
+            }
+            Some(match facts.admit_row_slicing() {
+                Ok(()) => Ok(Selection {
+                    realization: id,
+                    residency: resident_profile(bank_convert),
+                    reason: SelectionReason::BankSlicedAtLoad,
+                    candidates: vec![id],
+                }),
+                Err(e) => Err(refuse(
+                    RefusalKind::AccessRefused,
+                    vec![(id, e.to_string())],
+                )),
+            })
+        }
+        // Nothing executes the scalar gate on a shared branch yet; a plan
+        // that carries one is refused by name rather than run unscaled.
+        Operation::SharedExpertBranchGate => {
+            Some(Err(refuse(RefusalKind::MissingRealization, vec![])))
+        }
+        // A per-expert bank: the stored bytes are bound as a mapping and
+        // executed in their stored form when the executor has a kernel
+        // for that form over a whole matrix; nothing is copied or
+        // converted, so there is exactly one candidate.
+        Operation::ExpertProject { .. } => {
+            let Some(registered) = &facts.registered else {
+                return Some(Err(refuse(RefusalKind::UnregisteredRepresentation, vec![])));
+            };
+            let format = mapped_format(&facts.label);
+            let id = RealizationId::cpu(RealizationForm::MappedStored {
+                format: format.unwrap_or(WeightFormat::F32),
+                access: MappedAccess::Demand,
+            });
+            Some(
+                match (
+                    format,
+                    registered
+                        .capabilities
+                        .require(operand.access, &facts.label),
+                ) {
+                    (Some(format), Ok(())) => Ok(Selection {
+                        realization: id,
+                        residency: resident_profile(format),
+                        reason: SelectionReason::BankMappedAsStored,
+                        candidates: vec![id],
+                    }),
+                    (Some(_), Err(e)) => Err(refuse(
+                        RefusalKind::AccessRefused,
+                        vec![(id, e.to_string())],
+                    )),
+                    (None, _) => Err(refuse(
+                        RefusalKind::MissingRealization,
+                        vec![(
+                            id,
+                            format!(
+                            "`{}` has no in-place kernel over a whole matrix; a per-expert bank \
+                             is never decoded or copied",
+                            facts.label
+                        ),
+                        )],
+                    )),
+                },
+            )
+        }
+        // A shared expert's projections are whole matrices: the same
+        // candidates as any dense FFN projection, chosen by the backend.
+        Operation::Project(_) | Operation::OutputHead | Operation::SharedExpertProject => None,
+    }
+}
+
+/// What `id` would make resident for an operand with these facts — the
+/// ONE pricing every selector and the budget's re-selection read, so a
+/// candidate costs the same wherever it is weighed: a direct kernel the
+/// codec's own declared profile, a decode the codec's decode residency,
+/// every executor-owned form the executor's own geometry.
+pub fn realization_residency(facts: &RepresentationFacts, id: RealizationId) -> ResidencyProfile {
+    match id.form {
+        RealizationForm::Direct(plan) => facts.direct_residency(plan).unwrap_or_else(|| {
+            facts
+                .registered
+                .as_ref()
+                .map(|r| r.decode_residency)
+                .unwrap_or(ResidencyProfile::DECODED_F32)
+        }),
+        RealizationForm::Decode(_) => facts
+            .registered
+            .as_ref()
+            .map(|r| r.decode_residency)
+            .unwrap_or(ResidencyProfile::DECODED_F32),
+        RealizationForm::DecodedGather => ResidencyProfile::DECODED_F32,
+        RealizationForm::Requantise(_)
+        | RealizationForm::SliceStored { .. }
+        | RealizationForm::MappedStored { .. }
+        | RealizationForm::DeviceResident(_) => resident_profile(id.format()),
+    }
+}
+
+/// The resident form a stored label executes in WITHOUT conversion, when
+/// the CPU executor has a whole-matrix kernel for it: bf16 through the
+/// fused bf16 matvec, f32 through BLAS. Every other stored form would need
+/// a decode, which a mapped binding by definition does not do.
+fn mapped_format(label: &str) -> Option<WeightFormat> {
+    use crate::format::vindex3::represent::codec::codecs::float::FloatDtype;
+    if label == FloatDtype::Bf16.label() {
+        Some(WeightFormat::Bf16)
+    } else if label == FloatDtype::F32.label() {
+        Some(WeightFormat::F32)
+    } else {
+        None
+    }
+}
+
+/// The reference backend's answer: the literal f32 transcription, always,
+/// for every projection of a registered representation.
+pub fn reference_selection(
+    operand: &PlannedOperand,
+    facts: &RepresentationFacts,
+) -> Result<Selection, Box<SelectionRefusal>> {
+    if let Some(common) = common_selection(operand, facts, WeightFormat::F32) {
+        return common;
+    }
+    let id = RealizationId::cpu(RealizationForm::Decode(PhysicalProjectionPlan::ScalarF32));
+    match &facts.registered {
+        Some(r) => Ok(Selection {
+            realization: id,
+            residency: r.decode_residency,
+            reason: SelectionReason::ReferenceOracle,
+            candidates: vec![id],
+        }),
+        None => Err(Box::new(SelectionRefusal {
+            operand: operand.operand.clone(),
+            operation: operand.operation,
+            representation: facts.label.clone(),
+            requested: operand.access,
+            kind: RefusalKind::UnregisteredRepresentation,
+            considered: vec![],
+        })),
+    }
+}
+
+/// The class a projection-class operation names; the two non-projection
+/// operations never reach a class table.
+pub fn class_of(operation: Operation) -> Option<MatrixClass> {
+    match operation {
+        Operation::Project(class) => Some(class),
+        Operation::OutputHead => Some(MatrixClass::OutputHead),
+        Operation::SharedExpertProject => Some(MatrixClass::FfnProjection),
+        Operation::Embed
+        | Operation::ExpertBankSlice
+        | Operation::SharedExpertBranchGate
+        | Operation::ExpertProject { .. } => None,
+    }
+}

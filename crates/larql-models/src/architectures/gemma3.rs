@@ -10,8 +10,9 @@
 //! Note: HuggingFace saves Gemma norm weights with the +1 offset already baked in,
 //! so norm_weight_offset is 0.0 (the saved weight IS the final multiplier).
 
-use crate::config::{Activation, ModelArchitecture, ModelConfig};
+use crate::config::{Activation, ModelArchitecture, ModelConfig, PostNormEps};
 use crate::multimodal::{MultiModalProtocol, PlaceholderProtocol, PrecomputedScaling, TokenBudget};
+use crate::tensor_keys::qk_norm;
 
 /// Gemma 3 sliding window pattern: every 6th layer (0-indexed: 5, 11, 17, ...)
 /// uses full attention, the rest use sliding window.
@@ -94,17 +95,11 @@ impl ModelArchitecture for Gemma3Arch {
     // ── Gemma 3 has QK norm ──
 
     fn attn_q_norm_key(&self, layer: usize) -> Option<String> {
-        Some(format!(
-            "{}self_attn.q_norm.weight",
-            self.layer_prefix(layer)
-        ))
+        qk_norm::q(&self.layer_prefix(layer))
     }
 
     fn attn_k_norm_key(&self, layer: usize) -> Option<String> {
-        Some(format!(
-            "{}self_attn.k_norm.weight",
-            self.layer_prefix(layer)
-        ))
+        qk_norm::k(&self.layer_prefix(layer))
     }
 
     // ── Gemma-specific behavior ──
@@ -122,12 +117,20 @@ impl ModelArchitecture for Gemma3Arch {
         Activation::GeluTanh
     }
 
-    fn embed_scale(&self) -> f32 {
-        (self.config.hidden_size as f32).sqrt()
+    fn embed_scale(&self) -> Option<f32> {
+        Some((self.config.hidden_size as f32).sqrt())
     }
 
     fn has_post_norms(&self) -> bool {
         true
+    }
+
+    /// Gemma 3's post-norms share `rms_norm_eps` with its pre-norms — see
+    /// [`Gemma2Architecture::post_norm_eps`](super::gemma2::Gemma2Architecture).
+    /// Declared rather than inherited: a four-norm stack that leaves the
+    /// post-norm epsilon unjudged is refused.
+    fn post_norm_eps(&self) -> Option<PostNormEps> {
+        Some(PostNormEps::Shared)
     }
 
     fn is_sliding_window_layer(&self, layer: usize) -> bool {
@@ -164,7 +167,10 @@ impl ModelArchitecture for Gemma3Arch {
             Some(rs) => rs,
             None => return 1.0,
         };
-        if !rs.scaling_type.eq_ignore_ascii_case("linear") {
+        if !rs
+            .scaling_type
+            .eq_ignore_ascii_case(crate::ROPE_TYPE_LINEAR)
+        {
             return 1.0;
         }
         if self.is_sliding_window_layer(layer) {
@@ -198,19 +204,39 @@ mod tests {
             num_layers: 34,
             hidden_size: 2560,
             intermediate_size: 10240,
+            ffn_intermediate_size_by_layer: None,
             head_dim: 256,
             num_q_heads: 8,
             num_kv_heads: 4,
             vocab_size: Some(256_000),
             rope_base: 1_000_000.0,
+            layer_rope_theta: None,
             rope_local_base: Some(10_000.0),
             sliding_window: Some(1024),
+            use_sliding_window: None,
+            position_embedding_type: None,
+            no_rope_layers: None,
+            no_rope_layer_interval: None,
+            rope_interleaved: None,
+            use_mrope: None,
+            ffn_shape_name: None,
+            is_llama_config: None,
+            max_window_layers: None,
             num_experts: None,
             num_experts_per_token: None,
             num_shared_experts: None,
+            shared_expert_intermediate_size: None,
+            hc_streams: None,
+            hc_sinkhorn_iters: None,
+            hc_eps: None,
+            attn_res_block_size: None,
             enable_moe_block: false,
             top_k_experts: None,
             moe_intermediate_size: None,
+            swiglu_limit: None,
+            norm_topk_prob: None,
+            routed_expert_hidden_size: None,
+            latent_moe_use_norm: None,
             kv_lora_rank: None,
             q_lora_rank: None,
             qk_nope_head_dim: None,
@@ -233,6 +259,67 @@ mod tests {
             per_layer_embed_dim: None,
             num_kv_shared_layers: None,
             has_vision_config: false,
+            tie_word_embeddings: None,
+            qk_scale_factor: None,
+            output_multiplier: None,
+            post_norm_eps: None,
+            attention_bias: None,
+            mlp_bias: None,
+            hidden_act: None,
+            activation_situ_beta: None,
+            activation_situ_linear_beta: None,
+            max_position_embeddings: None,
+            image_token_id: None,
+            video_token_id: None,
+            out_hidden_size: None,
+            projector_hidden_size: None,
+            projector_hidden_act: None,
+            target_layer_ids: None,
+            draft_block_size: None,
+            mask_token_id: None,
+            use_double_wide_mlp: None,
+            vocab_size_per_layer_input: None,
+            linear_conv_kernel_dim: None,
+            linear_key_head_dim: None,
+            linear_value_head_dim: None,
+            linear_num_key_heads: None,
+            linear_num_value_heads: None,
+            linear_attn_interleave: crate::config::DeclaredInterleave::Absent,
+            mtp_interleave: crate::config::DeclaredInterleave::Absent,
+            kda_geometry: None,
+            kda_gate_lower_bound: None,
+            kda_safe_gate: None,
+            kda_use_full_rank_gate: None,
+            mla_use_output_gate: None,
+            router_activation: None,
+            routed_scaling_factor: None,
+            expert_groups: None,
+            topk_group: None,
+            use_grouped_topk: None,
+            moe_layer_freq: None,
+            first_k_dense_replace: None,
+            mla_use_nope: None,
+            model_max_length: None,
+            d_rel: None,
+            rel_extent: None,
+            mamba_ssm_dtype: None,
+            mamba2_geometry: None,
+            mamba2_provenance: None,
+            conv_qkv_attn: None,
+            conv_qkv_provenance: None,
+            attn_causal: None,
+            pad_vocab_size_multiple: None,
+            fused_add_norm: None,
+            mlp_intermediate_size: None,
+            mlp_padding_size: None,
+            use_mlp_bias: None,
+            residual_in_fp32: None,
+            attn_output_gate: None,
+            output_gate_type: None,
+            mtp_num_hidden_layers: None,
+            mtp_use_dedicated_embeddings: None,
+            mrope_interleaved: None,
+            mrope_section: None,
         }
     }
 
@@ -260,6 +347,11 @@ mod tests {
             llama3_low_freq_factor: None,
             llama3_high_freq_factor: None,
             llama3_original_max_position_embeddings: None,
+            yarn_beta_fast: None,
+            yarn_beta_slow: None,
+            yarn_truncate: None,
+            yarn_mscale: None,
+            yarn_mscale_all_dim: None,
             gemma3_global_only: false,
         })));
         assert_eq!(arch.rope_position_divisor_for_layer(0), 1.0);
@@ -274,6 +366,11 @@ mod tests {
             llama3_low_freq_factor: None,
             llama3_high_freq_factor: None,
             llama3_original_max_position_embeddings: None,
+            yarn_beta_fast: None,
+            yarn_beta_slow: None,
+            yarn_truncate: None,
+            yarn_mscale: None,
+            yarn_mscale_all_dim: None,
             gemma3_global_only: true,
         })));
         // Layers 5, 11, 17, ... are full attention; everyone else sliding.

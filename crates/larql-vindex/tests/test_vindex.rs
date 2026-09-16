@@ -793,6 +793,7 @@ fn v2_config_full_round_trip() {
             attention_k_eq_v: false,
             num_kv_shared_layers: None,
             per_layer_embed_dim: None,
+            layer_rope_theta: None,
             rope_local_base: None,
             query_pre_attn_scalar: None,
             final_logit_softcapping: None,
@@ -800,6 +801,7 @@ fn v2_config_full_round_trip() {
             residual_multiplier: None,
             logits_scaling: None,
             norm_eps: None,
+            ..Default::default()
         }),
         fp4: None,
         ffn_layout: None,
@@ -876,6 +878,7 @@ fn v2_config_with_moe() {
                 num_experts: 8,
                 top_k: 2,
                 shared_expert: false,
+                shared_expert_intermediate_size: None,
                 router_type: "top_k_softmax".into(),
                 moe_intermediate_size: None,
                 hybrid: false,
@@ -888,6 +891,7 @@ fn v2_config_with_moe() {
             attention_k_eq_v: false,
             num_kv_shared_layers: None,
             per_layer_embed_dim: None,
+            layer_rope_theta: None,
             rope_local_base: None,
             query_pre_attn_scalar: None,
             final_logit_softcapping: None,
@@ -895,6 +899,7 @@ fn v2_config_with_moe() {
             residual_multiplier: None,
             logits_scaling: None,
             norm_eps: None,
+            ..Default::default()
         }),
         fp4: None,
         ffn_layout: None,
@@ -1013,6 +1018,7 @@ fn moe_layer_info_round_trip() {
                 num_experts: 8,
                 top_k: 2,
                 shared_expert: false,
+                shared_expert_intermediate_size: None,
                 router_type: "top_k_softmax".into(),
                 moe_intermediate_size: None,
                 hybrid: false,
@@ -1025,6 +1031,7 @@ fn moe_layer_info_round_trip() {
             attention_k_eq_v: false,
             num_kv_shared_layers: None,
             per_layer_embed_dim: None,
+            layer_rope_theta: None,
             rope_local_base: None,
             query_pre_attn_scalar: None,
             final_logit_softcapping: None,
@@ -1032,6 +1039,7 @@ fn moe_layer_info_round_trip() {
             residual_multiplier: None,
             logits_scaling: None,
             norm_eps: None,
+            ..Default::default()
         }),
         fp4: None,
         ffn_layout: None,
@@ -1942,6 +1950,8 @@ fn make_synthetic_model() -> larql_models::ModelWeights {
         skipped_tensors: Vec::new(),
         packed_mmaps: std::collections::HashMap::new(),
         packed_byte_ranges: std::collections::HashMap::new(),
+        per_layer_ffn_format: Default::default(),
+        per_layer_ffn_arrangement: Default::default(),
         embed,
         lm_head,
         position_embed: None,
@@ -2619,6 +2629,8 @@ fn streaming_extract_from_safetensors() {
         larql_vindex::WriteWeightsOptions::default(),
         larql_vindex::KquantWriteOptions::default(),
         false,
+        larql_vindex::ExtractionRequest::Legacy,
+        None,
         &mut cb,
     )
     .unwrap();
@@ -2824,6 +2836,8 @@ fn streaming_extract_q4k_from_safetensors() {
         larql_vindex::WriteWeightsOptions::default(),
         larql_vindex::KquantWriteOptions::default(),
         false,
+        larql_vindex::ExtractionRequest::Legacy,
+        None,
         &mut cb,
     )
     .unwrap();
@@ -3839,6 +3853,8 @@ fn streaming_extract_q4k_carries_ple_tensors() {
         larql_vindex::WriteWeightsOptions::default(),
         larql_vindex::KquantWriteOptions::default(),
         false,
+        larql_vindex::ExtractionRequest::Legacy,
+        None,
         &mut cb,
     )
     .unwrap();
@@ -4020,6 +4036,8 @@ fn streaming_extract_noquant_carries_ple_tensors() {
         larql_vindex::WriteWeightsOptions::default(),
         larql_vindex::KquantWriteOptions::default(),
         false,
+        larql_vindex::ExtractionRequest::Legacy,
+        None,
         &mut cb,
     )
     .unwrap();
@@ -4191,6 +4209,8 @@ fn load_model_weights_rejects_ple_arch_with_missing_sidecars() {
         larql_vindex::WriteWeightsOptions::default(),
         larql_vindex::KquantWriteOptions::default(),
         false,
+        larql_vindex::ExtractionRequest::Legacy,
+        None,
         &mut cb,
     )
     .unwrap();
@@ -4404,6 +4424,8 @@ fn streaming_extract_preserves_per_layer_intermediate_for_variable_ffn() {
         larql_vindex::WriteWeightsOptions::default(),
         larql_vindex::KquantWriteOptions::default(),
         false,
+        larql_vindex::ExtractionRequest::Legacy,
+        None,
         &mut cb,
     )
     .unwrap();
