@@ -9,5 +9,6 @@ license = "MIT"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+gix-types = { path = "../../../GIX/crates/gix-types" }
 sha2 = "0.10"
 hex = "0.4"

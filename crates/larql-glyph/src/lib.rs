@@ -13,6 +13,8 @@
 //! Wire formats match the canonical reference implementation
 //! (`Vantage/backend/glyph_index.py`).
 
+pub mod merkle_bridge;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
