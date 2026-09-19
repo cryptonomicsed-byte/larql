@@ -16,9 +16,11 @@
 pub mod merkle_bridge;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use thiserror::Error;
+
+// Re-export canonical GIX-FOLD-v1 primitives from gix-types (single source of truth).
+pub use gix_types::{content_hash, glyph_fold, odu_link, GlyphEdge, GlyphNode};
 
 #[derive(Debug, Error)]
 pub enum GlyphGraphError {
@@ -26,82 +28,6 @@ pub enum GlyphGraphError {
     UnknownNode(String),
     #[error("canonical id must be 64 hex chars")]
     BadCanonicalId,
-}
-
-// ---- GIX-FOLD-v1 -----------------------------------------------------------
-
-const FOLD_RANGES: [(u32, u32); 3] = [
-    (0x0020, 0xD7FF - 0x0020 + 1),
-    (0xE000, 0xFDCF - 0xE000 + 1),
-    (0xFDF0, 0xFFFD - 0xFDF0 + 1),
-];
-
-pub fn content_hash(text: &str) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(text.as_bytes());
-    h.finalize().into()
-}
-
-pub fn glyph_fold(digest: &[u8; 32]) -> char {
-    let total: u64 = FOLD_RANGES.iter().map(|(_, c)| *c as u64).sum();
-    let mut rem: u64 = 0;
-    for byte in digest {
-        rem = (rem << 8 | *byte as u64) % total;
-    }
-    let mut idx = rem as u32;
-    for (start, count) in FOLD_RANGES {
-        if idx < count {
-            return char::from_u32(start + idx).expect("fold ranges exclude invalid points");
-        }
-        idx -= count;
-    }
-    unreachable!()
-}
-
-pub fn odu_link(digest: &[u8; 32]) -> (u8, u16) {
-    (digest[0], (digest[0] as u16) << 8 | digest[1] as u16)
-}
-
-// ---- graph model ------------------------------------------------------------
-
-/// Metadata projection of one sealed memory chunk.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GlyphNode {
-    pub canonical_id: String,
-    pub glyph: char,
-    pub odu_base: u8,
-    pub odu_composed: u16,
-    pub ts: f64,
-    /// Free-form labels the agent chose to reveal (topic, vessel, project…).
-    pub tags: BTreeSet<String>,
-    /// Optional Walrus blob id so a WALK result can be expanded elsewhere.
-    pub walrus_blob_id: Option<String>,
-}
-
-impl GlyphNode {
-    /// Build the node for a plaintext chunk (plaintext is *not* retained).
-    pub fn from_chunk(chunk: &str, ts: f64) -> Self {
-        let digest = content_hash(chunk);
-        let (odu_base, odu_composed) = odu_link(&digest);
-        Self {
-            canonical_id: hex::encode(digest),
-            glyph: glyph_fold(&digest),
-            odu_base,
-            odu_composed,
-            ts,
-            tags: BTreeSet::new(),
-            walrus_blob_id: None,
-        }
-    }
-}
-
-/// Typed edge between two memory nodes.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-pub struct GlyphEdge {
-    pub from: String,
-    pub to: String,
-    /// e.g. "follows", "same-conversation", "shared-odu", "rem-cluster"
-    pub relation: String,
 }
 
 /// In-memory glyph knowledge graph with LQL-flavored query verbs.
@@ -142,6 +68,7 @@ impl GlyphGraph {
             from: from.to_string(),
             to: to.to_string(),
             relation: relation.to_string(),
+            weight: 0,
         });
         Ok(())
     }
@@ -224,6 +151,7 @@ impl GlyphGraph {
                         from: id_a.clone(),
                         to: id_b.clone(),
                         relation: "shared-odu".into(),
+                        weight: 0,
                     })
                 {
                     added += 1;
