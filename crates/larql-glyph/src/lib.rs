@@ -134,6 +134,57 @@ impl GlyphGraph {
         Ok(out)
     }
 
+    /// `WALK FOLDS <id>` — directed BFS through the fold hierarchy.
+    ///
+    /// Follows `fold_child` edges in the `from → to` direction only, so
+    /// traversal descends into nested child folds rather than ascending to the
+    /// root.  Returns all descendant fold nodes in BFS discovery order
+    /// (start node excluded).
+    ///
+    /// Use after wiring fold topology with `fold_child` edges:
+    ///   `graph.link(fold_id, child_id, "fold_child")?`
+    pub fn walk_folds(&self, start: &str) -> Result<Vec<&GlyphNode>, GlyphGraphError> {
+        self.walk_by_relation(start, "fold_child", true)
+    }
+
+    /// Directed or bidirectional BFS following only edges with `relation`.
+    ///
+    /// `directed = true`  → follows only `from == start` edges (downward).
+    /// `directed = false` → follows both `from` and `to` ends (undirected).
+    pub fn walk_by_relation(
+        &self,
+        start:    &str,
+        relation: &str,
+        directed: bool,
+    ) -> Result<Vec<&GlyphNode>, GlyphGraphError> {
+        if !self.nodes.contains_key(start) {
+            return Err(GlyphGraphError::UnknownNode(start.to_string()));
+        }
+        let mut seen: BTreeSet<&str>    = BTreeSet::from([start]);
+        let mut queue: VecDeque<&str>   = VecDeque::from([start]);
+        let mut out: Vec<&GlyphNode>    = Vec::new();
+
+        while let Some(id) = queue.pop_front() {
+            for edge in &self.edges {
+                if edge.relation != relation { continue; }
+                let next = if edge.from == id {
+                    edge.to.as_str()
+                } else if !directed && edge.to == id {
+                    edge.from.as_str()
+                } else {
+                    continue
+                };
+                if seen.insert(next) {
+                    if let Some(node) = self.nodes.get(next) {
+                        out.push(node);
+                        queue.push_back(next);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// `INFER` — materialize "shared-odu" edges between nodes whose composed
     /// Odù share a top byte (same base-Odù lineage in the Digital Calabash).
     /// Returns how many new edges were added.
@@ -242,6 +293,61 @@ mod tests {
         assert_eq!(g.infer_shared_odu(), 1);
         assert_eq!(g.infer_shared_odu(), 0, "idempotent");
         assert_eq!(g.walk(&a.canonical_id, 1).unwrap().len(), 1);
+    }
+
+    // ── Phase 8D — walk_folds / walk_by_relation ─────────────────────────────
+
+    #[test]
+    fn walk_folds_traverses_fold_child_edges() {
+        let (mut g, ids) = graph_with(&["root-fold", "child-fold-a", "child-fold-b", "grandchild"]);
+        // Wire: root → child-a → grandchild; root → child-b (unrelated to grandchild).
+        g.link(&ids[0], &ids[1], "fold_child").unwrap();
+        g.link(&ids[0], &ids[2], "fold_child").unwrap();
+        g.link(&ids[1], &ids[3], "fold_child").unwrap();
+        // Also add a non-fold edge that must NOT appear in walk_folds.
+        g.link(&ids[2], &ids[3], "follows").unwrap();
+
+        let folds = g.walk_folds(&ids[0]).unwrap();
+        let fold_ids: Vec<&str> = folds.iter().map(|n| n.canonical_id.as_str()).collect();
+
+        assert!(fold_ids.contains(&ids[1].as_str()), "child-a reachable");
+        assert!(fold_ids.contains(&ids[2].as_str()), "child-b reachable");
+        assert!(fold_ids.contains(&ids[3].as_str()), "grandchild reachable via child-a fold_child");
+        assert_eq!(folds.len(), 3, "root excluded; all 3 descendants");
+    }
+
+    #[test]
+    fn walk_folds_does_not_follow_non_fold_edges() {
+        let (mut g, ids) = graph_with(&["fold-a", "fold-b", "isolated"]);
+        g.link(&ids[0], &ids[2], "follows").unwrap();
+        g.link(&ids[0], &ids[1], "fold_child").unwrap();
+
+        let folds = g.walk_folds(&ids[0]).unwrap();
+        // Only fold_child edges → only ids[1].
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].canonical_id, ids[1]);
+    }
+
+    #[test]
+    fn walk_by_relation_directed_follows_only_from_direction() {
+        let (mut g, ids) = graph_with(&["a", "b", "c"]);
+        // a→b→c as fold_child; c→a as reverse (would cause cycle in undirected).
+        g.link(&ids[0], &ids[1], "fold_child").unwrap();
+        g.link(&ids[1], &ids[2], "fold_child").unwrap();
+
+        // Directed from c should find nothing (c has no outgoing fold_child).
+        let from_c = g.walk_by_relation(&ids[2], "fold_child", true).unwrap();
+        assert!(from_c.is_empty(), "directed walk from leaf must find nothing");
+
+        // Undirected from c should find a and b.
+        let from_c_undir = g.walk_by_relation(&ids[2], "fold_child", false).unwrap();
+        assert_eq!(from_c_undir.len(), 2, "undirected walk from leaf finds both ancestors");
+    }
+
+    #[test]
+    fn walk_folds_returns_error_for_unknown_start() {
+        let g = GlyphGraph::new();
+        assert!(matches!(g.walk_folds("nonexistent"), Err(GlyphGraphError::UnknownNode(_))));
     }
 
     #[test]
