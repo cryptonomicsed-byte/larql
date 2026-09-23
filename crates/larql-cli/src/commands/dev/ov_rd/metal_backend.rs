@@ -5,6 +5,24 @@
 
 pub(super) type Backend = Box<dyn larql_compute::ComputeBackend + Send + Sync>;
 
+/// Check whether Metal is available on this platform/build.
+///
+/// On non-macOS platforms this always returns `Err` with a descriptive message
+/// so callers can surface the reason rather than silently falling back.
+pub(super) fn check_metal_available() -> Result<(), &'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        #[cfg(feature = "gpu")]
+        return Ok(());
+        #[cfg(not(feature = "gpu"))]
+        return Err("Metal only available on macOS with `--features gpu`");
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Metal only available on macOS; current platform does not support Metal compute")
+    }
+}
+
 /// Initialize a Metal backend if `use_metal` is true and the `gpu` feature
 /// is compiled on macOS. Logs the outcome to stderr.
 pub(super) fn init(use_metal: bool) -> Option<Backend> {
@@ -27,10 +45,10 @@ pub(super) fn init(use_metal: bool) -> Option<Backend> {
     }
     #[cfg(not(all(feature = "gpu", target_os = "macos")))]
     {
-        eprintln!(
-            "Metal backend: not compiled in — rebuild with `--features gpu` on macOS. \
-             Falling back to CPU."
-        );
+        match check_metal_available() {
+            Ok(()) => unreachable!(),
+            Err(reason) => eprintln!("Metal backend: {reason}. Falling back to CPU."),
+        }
         None
     }
 }

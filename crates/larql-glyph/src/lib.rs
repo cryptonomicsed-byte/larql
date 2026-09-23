@@ -14,8 +14,26 @@
 //! (`Vantage/backend/glyph_index.py`).
 
 pub mod merkle_bridge;
+pub mod omokoda_integration;
 
 use serde::{Deserialize, Serialize};
+
+/// Returns `true` if the `LARQL_ENABLED` environment variable is set to `"true"`.
+///
+/// Omo-Koda2 checks this flag before issuing any LARQL glyph queries so the
+/// local-inference path can be toggled at runtime without recompilation.
+///
+/// ```
+/// // LARQL_ENABLED=true cargo run
+/// if larql_glyph::is_enabled() {
+///     // call larql_glyph::omokoda_integration::query_glyph_memory(...)
+/// }
+/// ```
+pub fn is_enabled() -> bool {
+    std::env::var("LARQL_ENABLED")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false)
+}
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use thiserror::Error;
 
