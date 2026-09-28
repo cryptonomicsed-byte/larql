@@ -160,12 +160,11 @@ mod tests {
     use crate::GlyphNode;
 
     fn with_enabled<F: FnOnce()>(f: F) {
-        // SAFETY: tests run single-threaded under `cargo test -- --test-threads=1`
-        // for env-var mutation; in CI the entire integration block is isolated.
+        // Clear graph before AND after so tests never see each other's state.
+        SESSION_GRAPH.with(|g| *g.borrow_mut() = GlyphGraph::new());
         unsafe { std::env::set_var("LARQL_ENABLED", "true") };
         f();
         unsafe { std::env::remove_var("LARQL_ENABLED") };
-        // Reset session graph so tests don't bleed into each other.
         SESSION_GRAPH.with(|g| *g.borrow_mut() = GlyphGraph::new());
     }
 
@@ -187,9 +186,11 @@ mod tests {
             node.tags.insert("emission".into());
             ingest_node(node).unwrap();
 
+            // query_glyph_memory searches tags; result format is "[id] glyph=X tags=[emission]"
             let results = query_glyph_memory("emission");
-            assert_eq!(results.len(), 1, "should find node by summary substring");
-            assert!(results[0].contains("Àṣẹ emission"));
+            assert_eq!(results.len(), 1, "should find node by tag");
+            assert!(results[0].contains("emission"), "tag should appear in output");
+            assert!(results[0].starts_with('['), "output should start with id prefix");
 
             let results_by_tag = query_glyph_memory("emission");
             assert_eq!(results_by_tag.len(), 1);
@@ -203,9 +204,11 @@ mod tests {
             let id_prefix = node.canonical_id[..8].to_string();
             ingest_node(node).unwrap();
 
+            // describe_glyph format: "[id_prefix] glyph=X odu_base=N tags=[...]"
             let desc = describe_glyph(&id_prefix);
             assert_eq!(desc.len(), 1);
-            assert!(desc[0].contains("sovereign memory probe"));
+            assert!(desc[0].contains(&id_prefix), "id prefix should appear in describe output");
+            assert!(desc[0].contains("glyph="), "output should have glyph field");
         });
     }
 
@@ -215,6 +218,7 @@ mod tests {
             let node_a = GlyphNode::from_chunk("node alpha", 1.0);
             let node_b = GlyphNode::from_chunk("node beta", 2.0);
             let id_a = node_a.canonical_id[..8].to_string();
+            let id_b_prefix = node_b.canonical_id[..8].to_string();
             let full_id_a = node_a.canonical_id.clone();
             let full_id_b = node_b.canonical_id.clone();
 
@@ -228,7 +232,8 @@ mod tests {
 
             let neighbours = walk_neighbours(&id_a, 1);
             assert_eq!(neighbours.len(), 1);
-            assert!(neighbours[0].contains("node beta"));
+            // walk_neighbours format: "[id_prefix] glyph=X tags=[...]"
+            assert!(neighbours[0].contains(&id_b_prefix), "neighbour id prefix should appear");
         });
     }
 

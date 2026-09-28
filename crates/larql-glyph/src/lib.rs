@@ -49,7 +49,7 @@ pub enum GlyphGraphError {
 }
 
 /// In-memory glyph knowledge graph with LQL-flavored query verbs.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct GlyphGraph {
     nodes: BTreeMap<String, GlyphNode>,
     edges: BTreeSet<GlyphEdge>,
